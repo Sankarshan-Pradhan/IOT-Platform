@@ -21,5 +21,5 @@ iot-platform/
    docker compose up -d
    ```
 2. Verify services:
-   - **TimescaleDB**: `localhost:5432` (database: `iot_platform`)
+   - **TimescaleDB**: `localhost:5433` (database: `iot_platform`)
    - **Mosquitto MQTT**: `localhost:1883`
