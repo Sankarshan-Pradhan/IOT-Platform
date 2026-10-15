@@ -1,0 +1,46 @@
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres
+    image: iot_postgres:latest
+    container_name: iot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iot_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-iot_platform}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - iot_network
+
+  mosquitto:
+    build:
+      context: .
+      dockerfile: Dockerfile.mosquitto
+    image: iot_mosquitto:latest
+    container_name: iot_mosquitto
+    restart: unless-stopped
+    ports:
+      - "${MQTT_PORT:-1883}:1883"
+      - "${MQTT_WS_PORT:-9001}:9001"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+    networks:
+      - iot_network
+
+volumes:
+  pgdata:
+  mosquitto_data:
+
+networks:
+  iot_network:
+    driver: bridge
