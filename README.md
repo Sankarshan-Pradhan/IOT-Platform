@@ -1,25 +1,262 @@
-# IoT Platform Mono-Repo
+# 🌐 Industrial IoT Platform Mono-Repo
 
-A modular, multi-tenant IoT platform designed for high-throughput time-series telemetry ingestion, device management, and real-time visualization.
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react)](https://react.dev)
+[![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=flat&logo=vite)](https://vitejs.dev)
+[![TimescaleDB](https://img.shields.io/badge/TimescaleDB-PostgreSQL_16-FDB515?style=flat&logo=postgresql)](https://timescale.com)
+[![MQTT](https://img.shields.io/badge/MQTT-Mosquitto_2.0-660066?style=flat&logo=eclipsemosquitto)](https://mosquitto.org)
+[![ESP32](https://img.shields.io/badge/Firmware-ESP32_+_DHT22-E7352C?style=flat&logo=espressif)](https://espressif.com)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-v3-38B2AC?style=flat&logo=tailwind-css)](https://tailwindcss.com)
 
-## Repository Structure
+A high-performance, multi-tenant IoT platform designed for high-throughput time-series telemetry ingestion, edge device management, cryptographic provisioning, and real-time visualization.
+
+---
+
+## 📑 Table of Contents
+
+- [System Architecture](#system-architecture)
+- [Roadmap & Completed Milestones](#roadmap--completed-milestones)
+- [Repository Structure](#repository-structure)
+- [Quick Start Guide](#quick-start-guide)
+  - [1. Infrastructure (TimescaleDB & Mosquitto)](#1-infrastructure-timescaledb--mosquitto)
+  - [2. Backend Service (Go)](#2-backend-service-go)
+  - [3. Frontend Dashboard (React + Vite)](#3-frontend-dashboard-react--vite)
+  - [4. Firmware & ESP32 Flashing](#4-firmware--esp32-flashing)
+  - [5. Testing Without Hardware (Simulator)](#5-testing-without-hardware-simulator)
+- [Key Features](#key-features)
+  - [Multi-Tenant Workspace & Channel Hierarchy](#multi-tenant-workspace--channel-hierarchy)
+  - [Cryptographic Key & Firmware Config Generator](#cryptographic-key--firmware-config-generator)
+  - [Resilient Backend Dual-Mode Operation](#resilient-backend-dual-mode-operation)
+  - [Real-Time 5-Second Telemetry Engine](#real-time-5-second-telemetry-engine)
+  - [Adaptive Light & Dark Mode](#adaptive-light--dark-mode)
+- [Documentation Index](#documentation-index)
+- [License](#license)
+
+---
+
+## 🏛️ System Architecture
+
+```
+                                  +---------------------------------------+
+                                  |   ESP32 Microcontroller Nodes         |
+                                  |   (DHT22 Temp & Humidity Sensor)      |
+                                  +---------------------------------------+
+                                           |                      |
+                    MQTT (QoS 1, every 5s) |                      | MQTT (QoS 1, every 5s)
+                    LWT: "offline"         |                      | LWT: "offline"
+                                           v                      v
+                                  +---------------------------------------+
+                                  |   Eclipse Mosquitto Broker (:1883)   |
+                                  |   Topics: devices/<id>/telemetry      |
+                                  +---------------------------------------+
+                                                      |
+                                                      | Paho MQTT Subscriber
+                                                      v
+                                  +---------------------------------------+
+                                  |         Go Backend Server (:8080)     |
+                                  |  - Dual Mode (TimescaleDB + In-Memory)|
+                                  |  - Auto-Registration & Heartbeat      |
+                                  |  - RESTful API & CORS Proxy           |
+                                  +---------------------------------------+
+                                           |                      |
+            SQL Writes / Trigger Sync      |                      | HTTP JSON REST API
+                                           v                      v
+        +-------------------------------------+        +-------------------------------------+
+        |     TimescaleDB (PostgreSQL 16)     |        |   React 18 + Vite Dashboard (:3000) |
+        |  ├── telemetry (Hypertable)         |        |  ├── 5s Polling Engine with Ticker  |
+        |  └── latest_telemetry (Cache O(1))  |        |  ├── Multi-Tenant Workspaces & Keys |
+        +-------------------------------------+        |  └── Dual Y-Axis Chart.js Charts    |
+                                                       +-------------------------------------+
+```
+
+---
+
+## 🚀 Roadmap & Completed Milestones
+
+| Stage | Focus Area | Status | Key Deliverables |
+| :--- | :--- | :---: | :--- |
+| **Days 1–2** | **Core Infrastructure & Ingestion Pipeline** | ✅ Complete | • Docker Compose for TimescaleDB & Mosquitto<br>• Relational schema with hypertable partitioning (`telemetry`) and $O(1)$ state cache (`latest_telemetry`)<br>• Go backend with Paho MQTT subscriber, device auto-registration, and REST APIs (`/health`, `/devices`, `/telemetry/latest`, `/telemetry/history`) |
+| **Days 3–4** | **ESP32 + DHT22 Firmware & Edge Hardware** | ✅ Complete | • Non-blocking PlatformIO C++ firmware with dual exponential reconnect backoff (1s → 60s)<br>• Arduino IDE standalone sketch (`.ino`)<br>• Last Will and Testament (LWT) for instant offline detection<br>• Comprehensive hardware wiring schematics for 3-pin and 4-pin DHT22 sensors<br>• Multi-node Go CLI simulator for instant validation without physical hardware |
+| **Days 5–6** | **Frontend Dashboard & Management Portal** | ✅ Complete | • React 18 + Vite + Tailwind CSS dashboard with light & dark theme persistence<br>• 5-second polling engine with live countdown ticker, pause/resume, and manual refresh<br>• Left sidebar navigation cards: Workspaces/Tenants, Channels/Groups, Devices, and Key Generator<br>• Built-in Cryptographic Key Generator (Tenant UUID, Channel Slug, Secret Key, and one-click copyable `config.h`)<br>• Dynamic workspace device lifecycle: no fake mock devices, clean onboarding state, and single-click device deletion / workspace purge<br>• Dual Y-axis Chart.js line charts for Temperature (°C/°F) and Humidity (% RH) with recent ingestion table |
+
+---
+
+## 📂 Repository Structure
 
 ```
 iot-platform/
-├── backend/       # Application server, REST/WebSocket APIs, MQTT ingestion service
-├── firmware/      # Edge microcontroller firmware (ESP32, STM32, Arduino)
-├── frontend/      # Web dashboard & device management UI
-├── infra/         # Docker Compose, TimescaleDB migrations, Mosquitto MQTT broker
-└── docs/          # Architecture documentation, API specifications, wiring guides
+├── backend/                       # High-throughput Go backend service
+│   ├── handlers/                  # REST API handlers, in-memory fallback cache, DB queries
+│   ├── models/                    # Data transfer objects (DTOs) & database models
+│   ├── mqtt/                      # Eclipse Paho MQTT subscriber & ingestion consumer
+│   ├── go.mod                     # Go dependencies
+│   ├── main.go                    # Service entry point & background reconnection loop
+│   └── README.md                  # Backend API documentation & architecture
+│
+├── frontend/                      # Enterprise React web dashboard & management UI
+│   ├── src/
+│   │   ├── components/            # UI modular components
+│   │   │   ├── Sidebar.jsx        # Left navigation cards (Workspaces, Channels, Devices, Keys)
+│   │   │   ├── Header.jsx         # System health, countdown timer, unit & theme toggles
+│   │   │   ├── DeviceSelector.jsx # Device switcher & empty workspace onboarding
+│   │   │   ├── MetricCard.jsx     # Temperature, Humidity, and RSSI health cards
+│   │   │   ├── TelemetryChart.jsx # Chart.js dual Y-axis historical trend lines
+│   │   │   ├── RecentTable.jsx    # Live tabular packet viewer
+│   │   │   ├── TenantsView.jsx    # Multi-tenant workspace management
+│   │   │   ├── ChannelsView.jsx   # Logical telemetry channels & MQTT topic routing
+│   │   │   ├── DevicesView.jsx    # Edge client registry with trash / clear actions
+│   │   │   ├── ProvisioningView.jsx # Cryptographic key generator & config builder
+│   │   │   ├── ProvisionModal.jsx # Quick device onboarding modal
+│   │   │   ├── AddTenantModal.jsx # Add workspace dialog
+│   │   │   └── AddChannelModal.jsx# Add channel dialog
+│   │   ├── api.js                 # API client wrapper with proxy support
+│   │   ├── App.jsx                # Core application state & polling engine
+│   │   └── main.jsx               # React DOM entry point
+│   ├── package.json               # Node.js dependencies
+│   ├── vite.config.js             # Vite configuration with /api backend proxy
+│   └── README.md                  # Frontend feature walkthrough & setup guide
+│
+├── firmware/                      # Edge microcontroller firmware & tools
+│   ├── esp32-dht22/               # Production PlatformIO firmware project
+│   │   ├── include/config.h       # Hardware pinouts, WiFi, and MQTT credentials
+│   │   ├── src/main.cpp           # Non-blocking publish loop & exponential backoff
+│   │   └── platformio.ini         # PlatformIO build configuration
+│   ├── arduino-ide/               # Standalone Arduino IDE sketches
+│   │   └── esp32_dht22/           # esp32_dht22.ino + config.h
+│   ├── tools/
+│   │   └── simulate_nodes.go      # Multi-node MQTT telemetry simulator (Go)
+│   └── README.md                  # Firmware guide & flashing instructions
+│
+├── infra/                         # Production infrastructure & container definitions
+│   ├── docker-compose.yml         # Compose stack for TimescaleDB & Mosquitto
+│   ├── init.sql                   # Database migrations, hypertables, and triggers
+│   ├── mosquitto.conf             # Mosquitto broker configuration
+│   ├── .env.example               # Environment variable templates
+│   └── README.md                  # Infrastructure deployment & configuration
+│
+└── docs/                          # Engineering specifications & guides
+    ├── database_schema.md         # TimescaleDB hypertable schema design
+    ├── esp32_dht22_wiring_guide.md# Hardware pinout & wiring diagrams
+    └── README.md                  # Architecture index & document references
 ```
 
-## Getting Started (Infra)
+---
 
-1. Navigate to `infra/`:
+## ⚡ Quick Start Guide
+
+### 1. Infrastructure (TimescaleDB & Mosquitto)
+
+Ensure [Docker](https://www.docker.com/) is installed and running:
+```bash
+cd infra
+cp .env.example .env
+docker compose up -d
+```
+Verify running services:
+- **TimescaleDB**: `localhost:5433` (DB: `iot_platform`, User: `postgres`)
+- **Mosquitto MQTT**: `localhost:1883`
+
+---
+
+### 2. Backend Service (Go)
+
+The Go backend features **automatic fallback**: if TimescaleDB or Docker is temporarily offline, the backend continues running in resilient in-memory mode, auto-reconnecting as soon as the database starts!
+
+```bash
+cd backend
+go run main.go
+```
+The server will start on port `8080`.
+Verify backend status in your terminal:
+```bash
+curl http://localhost:8080/health
+```
+
+---
+
+### 3. Frontend Dashboard (React + Vite)
+
+In a new terminal window:
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open **`http://localhost:3000`** in your browser.
+- Switch between **Light Mode** and **Dark Mode** via the Sun/Moon icon in the header.
+- View real-time 5-second countdown polling.
+- Explore Workspaces, Channels, and the Key Generator in the left sidebar cards.
+
+---
+
+### 4. Firmware & ESP32 Flashing
+
+1. Review the [Hardware Wiring Guide](docs/esp32_dht22_wiring_guide.md) to connect your DHT22 sensor to the ESP32:
+   - **VCC** → 3.3V
+   - **GND** → GND
+   - **DATA** → GPIO 4 (with 10kΩ pull-up resistor if using 4-pin DHT22)
+2. Generate credentials in the frontend dashboard:
+   - Go to **Key Generator** in the sidebar.
+   - Click **Generate Credentials** and copy the generated C++ config snippet.
+   - Paste it into `firmware/esp32-dht22/include/config.h` (or set your WiFi SSID and PC broker IP).
+3. Build and flash using PlatformIO:
    ```bash
-   cp .env.example .env
-   docker compose up -d
+   cd firmware/esp32-dht22
+   pio run --target upload
+   pio device monitor -b 115200
    ```
-2. Verify services:
-   - **TimescaleDB**: `localhost:5433` (database: `iot_platform`)
-   - **Mosquitto MQTT**: `localhost:1883`
+*(Arduino IDE users can open `firmware/arduino-ide/esp32_dht22/esp32_dht22.ino`)*
+
+---
+
+### 5. Testing Without Hardware (Simulator)
+
+If you do not have an ESP32 board on hand, you can simulate 1–2 nodes streaming realistic DHT22 telemetry:
+```bash
+go run firmware/tools/simulate_nodes.go -broker tcp://localhost:1883 -nodes 2
+```
+Or simply click the **"Send Test Packet"** button directly on the frontend dashboard!
+
+---
+
+## 🌟 Key Features
+
+### Multi-Tenant Workspace & Channel Hierarchy
+- **Workspaces / Tenants**: Full organizational isolation. Devices, channels, and metrics belong to their respective tenant UUIDs.
+- **Groups & Channels**: Logical categorizations (e.g. *Laboratory Environmental Monitoring*, *Server Room HVAC*) mapped to MQTT topic patterns (`devices/+/telemetry`).
+- **Clean Empty States**: No dummy devices are hardcoded. Fresh workspaces show an inviting empty state ready for provisioning.
+- **Device Management**: Clear individual test devices or purge all devices in a workspace with a single click.
+
+### Cryptographic Key & Firmware Config Generator
+- Generates RFC 4122 Tenant UUIDs, Channel Slugs, and `iot_sec_...` cryptographic authentication keys.
+- Features a **one-click copyable C++ `config.h` snippet** containing WiFi SSID, MQTT IP, Tenant ID, Channel ID, and Secret Key ready to paste directly into your firmware.
+
+### Resilient Backend Dual-Mode Operation
+- When TimescaleDB is connected: Telemetry is partitioned across hypertables with trigger-driven $O(1)$ latest telemetry caching.
+- If TimescaleDB is offline: An internal thread-safe in-memory cache handles all ingestion, latest readings, and history queries with HTTP 200 responses, automatically retrying the PostgreSQL connection in the background.
+
+### Real-Time 5-Second Telemetry Engine
+- The frontend features a synchronized **5-second polling ticker** (`5s` → `1s`) with pause/resume controls and manual refresh.
+- Displays live metric cards with temperature unit toggling (°C / °F), dynamic trend deltas, min/max metrics, and ESP32 WiFi RSSI signal strength.
+- Chart.js powered historical line charts render smooth curves over dual Y-axes with sample size filters (20, 50, 100 points).
+
+### Adaptive Light & Dark Mode
+- Built with Tailwind CSS supporting both an ultra-clean **Light Mode** and modern **Dark Mode**.
+- Persists user preferences seamlessly in browser `localStorage`.
+
+---
+
+## 📚 Documentation Index
+
+- [Backend API Specification & Architecture](backend/README.md)
+- [Frontend Dashboard & Component Guide](frontend/README.md)
+- [Firmware Setup, PlatformIO & Arduino Guide](firmware/README.md)
+- [Hardware Wiring & Assembly Guide](docs/esp32_dht22_wiring_guide.md)
+- [Database Schema & TimescaleDB Hypertable Design](docs/database_schema.md)
+- [Infrastructure & Docker Compose Guide](infra/README.md)
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the repository for details.

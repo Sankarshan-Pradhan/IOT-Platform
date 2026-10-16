@@ -35,7 +35,6 @@ func getEnv(key, defaultVal string) string {
 }
 
 func loadConfig() Config {
-	// Search and load .env from common locations
 	for _, envPath := range []string{"infra/.env", "../infra/.env", ".env"} {
 		if _, err := os.Stat(envPath); err == nil {
 			_ = godotenv.Load(envPath)
@@ -61,7 +60,7 @@ func loadConfig() Config {
 
 func initDB(cfg Config) (*sql.DB, error) {
 	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable connect_timeout=3",
 		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName,
 	)
 
@@ -75,7 +74,7 @@ func initDB(cfg Config) (*sql.DB, error) {
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
-		return db, err
+		return nil, err
 	}
 
 	return db, nil
@@ -83,31 +82,48 @@ func initDB(cfg Config) (*sql.DB, error) {
 
 func main() {
 	cfg := loadConfig()
-	log.Println("Starting IoT Backend Service...")
+	log.Println("Starting IoT Backend Service on port 8080...")
 
-	// 1. Initialize TimescaleDB / PostgreSQL
-	db, err := initDB(cfg)
-	if err != nil {
-		log.Printf("[Warning] Database connection failed: %v", err)
-		log.Println("[Notice] Run 'docker compose up -d' inside the infra directory to start TimescaleDB.")
-	} else {
-		defer db.Close()
-		log.Println("[Success] Connected to TimescaleDB/PostgreSQL successfully.")
-	}
+	var db *sql.DB
+	api := handlers.NewAPIHandler(nil)
+	var mqttSvc *mqtt.MQTTService
 
-	// 2. Start MQTT Subscriber (if DB is available)
-	if db != nil {
-		mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, db)
-		if err := mqttSvc.Start(); err != nil {
-			log.Printf("[MQTT] Warning: Could not connect to broker (%s): %v", cfg.MQTTBrokerURL, err)
-		} else {
-			defer mqttSvc.Stop()
+	tryConnectDB := func() {
+		newDB, err := initDB(cfg)
+		if err == nil {
+			db = newDB
+			api.SetDB(newDB)
+			log.Println("[Success] Connected to TimescaleDB/PostgreSQL successfully.")
+
+			if mqttSvc == nil {
+				mqttSvc = mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, newDB)
+				if err := mqttSvc.Start(); err != nil {
+					log.Printf("[MQTT] Waiting for broker (%s): %v", cfg.MQTTBrokerURL, err)
+				}
+			}
 		}
 	}
 
-	// 3. Initialize HTTP Handlers & Router
+	// Initial connection attempt
+	tryConnectDB()
+	if db == nil {
+		log.Println("[Notice] TimescaleDB on port 5433 not detected yet. Running with resilient in-memory cache until database is up.")
+		log.Println("[Notice] To start database, run: docker compose up -d inside infra/")
+	}
+
+	// Background worker to auto-reconnect when TimescaleDB starts
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if db == nil || db.Ping() != nil {
+				tryConnectDB()
+			}
+		}
+	}()
+
+	// HTTP Handlers & Router
 	mux := http.NewServeMux()
-	api := handlers.NewAPIHandler(db)
 
 	// Device Registry
 	mux.HandleFunc("GET /api/v1/devices", api.GetDevices)
@@ -119,6 +135,10 @@ func main() {
 	// Telemetry Ingestion (HTTP)
 	mux.HandleFunc("POST /api/v1/devices/{id}/telemetry", api.IngestDeviceTelemetry)
 	mux.HandleFunc("POST /api/v1/telemetry", api.IngestTelemetry)
+
+	// Device Management (Delete & Reset)
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", api.DeleteDevice)
+	mux.HandleFunc("POST /api/v1/devices/reset", api.ResetDevices)
 
 	// Healthcheck & Root
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +179,18 @@ func main() {
 	addr := ":" + cfg.ServerPort
 	log.Printf("Server listening on %s (Healthcheck: http://localhost:%s/health)", addr, cfg.ServerPort)
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	corsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+
+	if err := http.ListenAndServe(addr, corsHandler); err != nil {
 		log.Fatalf("Server stopped: %v", err)
 	}
 }
