@@ -90,12 +90,14 @@ export default function App() {
     return saved ? JSON.parse(saved) : INITIAL_CHANNELS;
   });
 
+  // Filter out any known temporary / seed test devices
+  const isDemoDevice = (id) => id === 'esp32-dht22-01' || id === 'esp32-demo-01';
+
   // Devices state: initialized dynamically per tenant (starts clean, zero fake devices)
   const [devices, setDevices] = useState(() => {
     const saved = localStorage.getItem(`iot_devices_${activeTenant?.id}`);
     const parsed = saved ? JSON.parse(saved) : [];
-    // Clear out any old simulated test device
-    return parsed.filter((d) => d.device_id !== 'esp32-dht22-01');
+    return parsed.filter((d) => !isDemoDevice(d.device_id));
   });
 
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -141,7 +143,7 @@ export default function App() {
   useEffect(() => {
     const saved = localStorage.getItem(`iot_devices_${activeTenant?.id}`);
     const loaded = saved ? JSON.parse(saved) : [];
-    const cleaned = loaded.filter((d) => d.device_id !== 'esp32-dht22-01');
+    const cleaned = loaded.filter((d) => !isDemoDevice(d.device_id));
     localStorage.setItem(`iot_devices_${activeTenant?.id}`, JSON.stringify(cleaned));
     setDevices(cleaned);
     if (cleaned.length > 0) {
@@ -166,7 +168,7 @@ export default function App() {
       // 2. Fetch devices from backend for this tenant
       const devList = await fetchDevices(activeTenant?.id);
       if (Array.isArray(devList)) {
-        const cleanList = devList.filter((d) => d.device_id !== 'esp32-dht22-01');
+        const cleanList = devList.filter((d) => !isDemoDevice(d.device_id));
         setDevices(cleanList);
         localStorage.setItem(`iot_devices_${activeTenant?.id}`, JSON.stringify(cleanList));
 
@@ -242,7 +244,7 @@ export default function App() {
   // Ingest Sample Telemetry Test Trigger
   // ----------------------------------------------------------------------------
   const handleTestInject = async () => {
-    const targetId = selectedDeviceId || 'esp32-dht22-01';
+    const targetId = selectedDeviceId || 'esp32-node-01';
     setIsInjecting(true);
     try {
       const randomTemp = parseFloat((22 + Math.random() * 8).toFixed(1));

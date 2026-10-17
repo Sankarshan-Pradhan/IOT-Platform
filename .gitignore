@@ -72,6 +72,9 @@ infra/mosquitto/log/
 *.sublime-workspace
 *.sublime-project
 
+# Go / Binaries
+*.exe
+
 # Logs
 *.log
 logs/

@@ -92,7 +92,7 @@ AFTER INSERT ON telemetry
 FOR EACH ROW
 EXECUTE FUNCTION update_latest_telemetry_trigger();
 
--- 7. Seed Sample Tenant & Device for Development
+-- 7. Seed Default Tenant
 INSERT INTO tenants (id, name, slug, description)
 VALUES (
     'a0000000-0000-0000-0000-000000000001',
@@ -102,13 +102,3 @@ VALUES (
 )
 ON CONFLICT (slug) DO NOTHING;
 
-INSERT INTO devices (tenant_id, device_id, name, device_type, status, metadata)
-VALUES (
-    'a0000000-0000-0000-0000-000000000001',
-    'esp32-demo-01',
-    'ESP32 Test Node',
-    'ESP32',
-    'online',
-    '{"firmware_version": "1.0.0", "hardware": "ESP32-WROOM-32", "sensors": ["temperature", "humidity", "pressure"]}'::jsonb
-)
-ON CONFLICT (tenant_id, device_id) DO NOTHING;
