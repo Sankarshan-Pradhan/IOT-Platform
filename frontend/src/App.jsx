@@ -83,15 +83,29 @@ export default function App() {
     const saved = localStorage.getItem('iot_tenants');
     return saved ? JSON.parse(saved) : INITIAL_TENANTS;
   });
-  const [activeTenant, setActiveTenant] = useState(tenants[0] || INITIAL_TENANTS[0]);
+  const [activeTenant, setActiveTenant] = useState(() => {
+    const savedActive = localStorage.getItem('iot_active_tenant');
+    if (savedActive) {
+      try {
+        return JSON.parse(savedActive);
+      } catch (e) {}
+    }
+    return tenants[0] || INITIAL_TENANTS[0];
+  });
+
+  useEffect(() => {
+    if (activeTenant) {
+      localStorage.setItem('iot_active_tenant', JSON.stringify(activeTenant));
+    }
+  }, [activeTenant]);
 
   const [channels, setChannels] = useState(() => {
     const saved = localStorage.getItem('iot_channels');
     return saved ? JSON.parse(saved) : INITIAL_CHANNELS;
   });
 
-  // Filter out any known temporary / seed test devices
-  const isDemoDevice = (id) => id === 'esp32-dht22-01' || id === 'esp32-demo-01';
+  // Do not filter out any real connected devices
+  const isDemoDevice = (id) => false;
 
   // Devices state: initialized dynamically per tenant (starts clean, zero fake devices)
   const [devices, setDevices] = useState(() => {
@@ -166,7 +180,30 @@ export default function App() {
       setHealth(h);
 
       // 2. Fetch devices from backend for this tenant
-      const devList = await fetchDevices(activeTenant?.id);
+      let devList = await fetchDevices(activeTenant?.id);
+      if (Array.isArray(devList) && devList.length === 0) {
+        // Fallback: check if devices exist across any tenant so user is not stuck on an empty workspace
+        const allDevs = await fetchDevices('');
+        if (Array.isArray(allDevs) && allDevs.length > 0) {
+          const dev = allDevs[0];
+          const matchedTenant = tenants.find((t) => t.id === dev.tenant_id);
+          if (matchedTenant) {
+            setActiveTenant(matchedTenant);
+            devList = allDevs.filter((d) => d.tenant_id === matchedTenant.id);
+          } else {
+            const newT = {
+              id: dev.tenant_id,
+              name: 'ESP32 Workspace',
+              slug: 'workspace-' + dev.tenant_id.slice(0, 8),
+              description: 'Active workspace streaming from ESP32',
+            };
+            setTenants((prev) => [...prev, newT]);
+            setActiveTenant(newT);
+            devList = [dev];
+          }
+        }
+      }
+
       if (Array.isArray(devList)) {
         const cleanList = devList.filter((d) => !isDemoDevice(d.device_id));
         setDevices(cleanList);
@@ -174,8 +211,11 @@ export default function App() {
 
         if (!selectedDeviceRef.current && cleanList.length > 0) {
           setSelectedDeviceId(cleanList[0].device_id);
+          selectedDeviceRef.current = cleanList[0].device_id;
         } else if (cleanList.length === 0 || !cleanList.some((d) => d.device_id === selectedDeviceRef.current)) {
-          setSelectedDeviceId(cleanList.length > 0 ? cleanList[0].device_id : '');
+          const nextId = cleanList.length > 0 ? cleanList[0].device_id : '';
+          setSelectedDeviceId(nextId);
+          selectedDeviceRef.current = nextId;
           if (cleanList.length === 0) {
             setHistoryData([]);
             setLatestDataMap({});

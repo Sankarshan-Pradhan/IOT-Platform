@@ -95,7 +95,8 @@ Generates production-grade credentials for your ESP32 microcontrollers:
 ### 7. Interactive Dual Y-Axis Historical Chart
 - Powered by **Chart.js** with smooth cubic spline curves and gradient area fills.
 - **Dual Y-Axes**: Left axis scales for Temperature (°C/°F) and right axis scales for Humidity (% RH).
-- **Time Window Filters**: Switch history view between Last 20, 50, or 100 telemetry data points.
+- **Real-Time Rolling Window**: Always renders the most recent telemetry readings up to the current second, advancing dynamically across time.
+- **Time Window Filters**: Switch history view between Last 10, 20, 50, or 100 telemetry data points.
 - **Legend Series Toggles**: Hide or show individual metrics dynamically.
 
 ---

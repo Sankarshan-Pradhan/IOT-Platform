@@ -307,7 +307,7 @@ export default function TelemetryChart({
 
           {/* Sample count limit */}
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60 font-mono">
-            {[20, 50, 100].map((num) => (
+            {[10, 20, 50, 100].map((num) => (
               <button
                 key={num}
                 onClick={() => setLimit(num)}

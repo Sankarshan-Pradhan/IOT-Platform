@@ -6,7 +6,7 @@ export default function RecentTable({ historyData, tempUnit }) {
     return null;
   }
 
-  const recentRecords = [...historyData].reverse().slice(0, 8);
+  const recentRecords = [...historyData].reverse().slice(0, 10);
 
   return (
     <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-sm dark:shadow-xl transition-colors duration-200">

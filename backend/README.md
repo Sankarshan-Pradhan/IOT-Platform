@@ -171,7 +171,7 @@ Queries time-series telemetry records from the TimescaleDB hypertable.
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `limit` | `int` | `100` | Max records to return (1–1000) |
-| `order` | `string` | `DESC` | Sort order: `ASC` (chronological) or `DESC` (most recent first) |
+| `order` | `string` | `DESC` | Sort order: `ASC` (chronological rolling window of latest N points for charts) or `DESC` (most recent first) |
 | `start` / `from` | `RFC3339` | None | Start time boundary (e.g. `2026-10-16T10:00:00Z`) |
 | `end` / `to` | `RFC3339` | None | End time boundary |
 

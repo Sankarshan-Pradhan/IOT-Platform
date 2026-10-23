@@ -186,6 +186,13 @@ func (s *MQTTService) ensureDevice(tenantID, deviceID string) (string, error) {
 		tenantID = "a0000000-0000-0000-0000-000000000001"
 	}
 
+	// Ensure tenant exists in tenants table
+	_, _ = s.db.Exec(`
+		INSERT INTO tenants (id, name, slug)
+		VALUES ($1, 'Workspace ' || SUBSTRING($1::text, 1, 8), 'workspace-' || SUBSTRING($1::text, 1, 8))
+		ON CONFLICT (id) DO NOTHING;
+	`, tenantID)
+
 	insertQuery := `
 		INSERT INTO devices (tenant_id, device_id, name, device_type, status)
 		VALUES ($1, $2, $2, 'generic', 'online')

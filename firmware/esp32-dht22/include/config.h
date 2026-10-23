@@ -1,52 +1,37 @@
+// ==============================================================================
+// ESP32 Provisioning Config for IoT Platform
+// Generated automatically from IoT Platform Dashboard
+// ==============================================================================
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// ==============================================================================
-// Days 3–4: ESP32 + DHT22 Firmware Configuration
-// ==============================================================================
-
-// ------------------------------------------------------------------------------
-// 1. WiFi Settings
-// ------------------------------------------------------------------------------
+// WiFi Credentials (Replace with your local Wi-Fi network before flashing)
 #define WIFI_SSID             "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD         "YOUR_WIFI_PASSWORD"
 
-// ------------------------------------------------------------------------------
-// 2. MQTT Broker Settings
-// ------------------------------------------------------------------------------
-// Host running Mosquitto (use your local LAN IP e.g. 192.168.1.15; do NOT use localhost on ESP32)
-#define MQTT_BROKER           "192.168.1.100"
+// MQTT Broker
+#define MQTT_BROKER           "192.168.0.112"
 #define MQTT_PORT             1883
 
-// Credentials (leave empty if mosquitto.conf permits anonymous access)
-#define MQTT_USER             ""
-#define MQTT_PASSWORD         ""
-
-// ------------------------------------------------------------------------------
-// 3. Device Identification
-// Note: When setting up 2 boards:
-//       Board 1 -> "esp32-dht22-01"
-//       Board 2 -> "esp32-dht22-02"
-// ------------------------------------------------------------------------------
+// Authentication & Identity
+#define TENANT_ID             "4f39edef-66e5-47f9-afed-34d017a2bb5e"
+#define CHANNEL_ID            "chan-dht22-nse2w0"
 #define DEVICE_ID             "esp32-dht22-01"
-#define TENANT_ID             "a0000000-0000-0000-0000-000000000001"
+#define MQTT_USER             "esp32-dht22-01"
+#define MQTT_PASSWORD         "iot_sec_85daa459f8e18541f5a82b6d0155e400a625bc27"
 
-// Topic structure: <MQTT_TOPIC_PREFIX>/<DEVICE_ID>/telemetry
-// Example: devices/esp32-dht22-01/telemetry
+// MQTT Topics
 #define MQTT_TOPIC_PREFIX     "devices"
+#define MQTT_TELEMETRY_TOPIC  "devices/esp32-dht22-01/telemetry"
 
-// ------------------------------------------------------------------------------
-// 4. Hardware Pinout
-// ------------------------------------------------------------------------------
-#define DHT_PIN               4     // ESP32 GPIO connected to DHT22 DATA (Recommended: GPIO 4 or GPIO 22)
-#define DHT_TYPE              DHT22 // DHT22 / AM2302
-#define STATUS_LED_PIN        2     // Built-in status LED on ESP32 DevKit (GPIO 2)
+// Hardware Pinout
+#define DHT_PIN               4     // ESP32 GPIO connected to DHT22 DATA
+#define DHT_TYPE              DHT22
+#define STATUS_LED_PIN        2
 
-// ------------------------------------------------------------------------------
-// 5. Intervals & Reconnect Backoff Configuration
-// ------------------------------------------------------------------------------
-#define PUBLISH_INTERVAL_MS   5000  // 5 seconds publish interval (Days 3-4 requirement)
-#define INITIAL_BACKOFF_MS    1000  // Initial reconnect backoff: 1,000 ms (1s)
-#define MAX_BACKOFF_MS        60000 // Maximum reconnect backoff cap: 60,000 ms (60s)
+// Polling & Reconnect Settings
+#define PUBLISH_INTERVAL_MS   5000  // 5 seconds
+#define INITIAL_BACKOFF_MS    1000  // 1 second
+#define MAX_BACKOFF_MS        60000 // 60 seconds
 
 #endif // CONFIG_H

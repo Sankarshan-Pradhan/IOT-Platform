@@ -237,15 +237,33 @@ func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request)
 				}
 			}
 
-			query := `
-				SELECT time, tenant_id, device_id, payload, created_at
-				FROM telemetry
-				WHERE tenant_id = $1 AND device_id = $2
-				  AND ($3::timestamptz IS NULL OR time >= $3)
-				  AND ($4::timestamptz IS NULL OR time <= $4)
-				ORDER BY time ` + order + `
-				LIMIT $5;
-			`
+			var query string
+			if order == "ASC" {
+				// Fetch the most recent N records and return them in ascending chronological order for charts
+				query = `
+					SELECT time, tenant_id, device_id, payload, created_at
+					FROM (
+						SELECT time, tenant_id, device_id, payload, created_at
+						FROM telemetry
+						WHERE tenant_id = $1 AND device_id = $2
+						  AND ($3::timestamptz IS NULL OR time >= $3)
+						  AND ($4::timestamptz IS NULL OR time <= $4)
+						ORDER BY time DESC
+						LIMIT $5
+					) sub
+					ORDER BY time ASC;
+				`
+			} else {
+				query = `
+					SELECT time, tenant_id, device_id, payload, created_at
+					FROM telemetry
+					WHERE tenant_id = $1 AND device_id = $2
+					  AND ($3::timestamptz IS NULL OR time >= $3)
+					  AND ($4::timestamptz IS NULL OR time <= $4)
+					ORDER BY time DESC
+					LIMIT $5;
+				`
+			}
 
 			rows, err := h.DB.Query(query, device.TenantID, device.DeviceID, startTime, endTime, limit)
 			if err == nil {
@@ -370,6 +388,12 @@ func (h *APIHandler) IngestDeviceTelemetry(w http.ResponseWriter, r *http.Reques
 
 	// 2. Persist to TimescaleDB if connected
 	if h.isDBReady() {
+		_, _ = h.DB.Exec(`
+			INSERT INTO tenants (id, name, slug)
+			VALUES ($1, 'Workspace ' || SUBSTRING($1::text, 1, 8), 'workspace-' || SUBSTRING($1::text, 1, 8))
+			ON CONFLICT (id) DO NOTHING;
+		`, tenantID)
+
 		regQuery := `
 			INSERT INTO devices (tenant_id, device_id, name, device_type, status)
 			VALUES ($1, $2, $2, 'ESP32', 'online')
