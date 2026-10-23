@@ -63,11 +63,9 @@ infra/mosquitto/log/
 *.sqlite3
 
 # IDEs & Editors
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
+.vscode/
+**/.vscode/
+firmware/esp32-dht22/.gitignore
 .idea/
 *.sublime-workspace
 *.sublime-project
