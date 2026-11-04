@@ -4,11 +4,12 @@ import { Cpu, Plus, Wifi, Copy, Check, ShieldCheck, ArrowRight, Key, Trash2 } fr
 export default function DevicesView({
   devices,
   latestDataMap,
-  onOpenProvision,
+  onOpenAddDevice,
   onSelectDevice,
   onNavigateToDashboard,
   onDeleteDevice,
   onResetAllDevices,
+  isAdmin = false,
 }) {
   const [copiedId, setCopiedId] = useState(null);
 
@@ -34,28 +35,37 @@ export default function DevicesView({
         </div>
 
         <div className="flex items-center gap-2">
-          {devices && devices.length > 0 && (
-            <button
-              onClick={() => {
-                if (window.confirm('Are you sure you want to clear all devices and telemetry from this workspace?')) {
-                  onResetAllDevices();
-                }
-              }}
-              className="px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 font-bold text-xs flex items-center gap-1.5 transition shadow-sm"
-              title="Clear all test devices and reset workspace"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear All Devices</span>
-            </button>
-          )}
+          {!isAdmin ? (
+            <>
+              {devices && devices.length > 0 && (
+                <button
+                  onClick={() => {
+                    if (window.confirm('Are you sure you want to clear all devices and telemetry from this workspace?')) {
+                      onResetAllDevices();
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:hover:bg-rose-500/20 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30 font-bold text-xs flex items-center gap-1.5 transition shadow-sm"
+                  title="Clear all test devices and reset workspace"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Clear All Devices</span>
+                </button>
+              )}
 
-          <button
-            onClick={onOpenProvision}
-            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition shadow-md shadow-emerald-500/20"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Provision New ESP32</span>
-          </button>
+              <button
+                onClick={onOpenAddDevice}
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition shadow-md shadow-emerald-500/20"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Register New Device</span>
+              </button>
+            </>
+          ) : (
+            <div className="px-3.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-xs">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              <span>Telemetry Monitor (Read-Only)</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -68,16 +78,20 @@ export default function DevicesView({
           <div>
             <h3 className="text-base font-bold text-slate-900 dark:text-white">No devices in this workspace</h3>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
-              Devices are tied to their workspace tenant. Click below to generate your Tenant ID, Channel ID, and Secret Key to connect an ESP32.
+              {isAdmin 
+                ? 'Supervisory Monitor: Sensor nodes will automatically register when hardware publishes telemetry.' 
+                : 'Devices are tied to their workspace tenant. Register a device or start publishing telemetry from your hardware to begin.'}
             </p>
           </div>
-          <button
-            onClick={onOpenProvision}
-            className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 transition shadow"
-          >
-            <Key className="w-4 h-4" />
-            <span>Provision ESP32 Node</span>
-          </button>
+          {!isAdmin && (
+            <button
+              onClick={onOpenAddDevice}
+              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs inline-flex items-center gap-2 transition shadow"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Register Sensor Device</span>
+            </button>
+          )}
         </div>
       ) : (
         /* Devices Grid */
@@ -128,17 +142,19 @@ export default function DevicesView({
                           <Copy className="w-3.5 h-3.5" />
                         )}
                       </button>
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`Delete device "${device.name || device.device_id}"?`)) {
-                            onDeleteDevice(device.device_id);
-                          }
-                        }}
-                        className="text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition p-1 rounded-md hover:bg-rose-50 dark:hover:bg-rose-500/10"
-                        title="Delete Device"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {!isAdmin && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm(`Delete device "${device.name || device.device_id}"?`)) {
+                              onDeleteDevice(device.device_id);
+                            }
+                          }}
+                          className="text-slate-400 hover:text-rose-500 dark:hover:text-rose-400 transition p-1 rounded-md hover:bg-rose-50 dark:hover:bg-rose-500/10"
+                          title="Delete Device"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
 

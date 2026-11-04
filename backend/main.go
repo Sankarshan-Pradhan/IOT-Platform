@@ -25,6 +25,7 @@ type Config struct {
 	MQTTBrokerURL string
 	MQTTClientID  string
 	ServerPort    string
+	AdminAPIKey   string
 }
 
 func getEnv(key, defaultVal string) string {
@@ -55,6 +56,7 @@ func loadConfig() Config {
 		MQTTBrokerURL: getEnv("MQTT_BROKER_URL", defaultBrokerURL),
 		MQTTClientID:  getEnv("MQTT_CLIENT_ID", "iot-backend-service"),
 		ServerPort:    getEnv("PORT", "8080"),
+		AdminAPIKey:   getEnv("ADMIN_API_KEY", "iot_admin_secret_key_2026"),
 	}
 }
 
@@ -85,8 +87,13 @@ func main() {
 	log.Println("Starting IoT Backend Service on port 8080...")
 
 	var db *sql.DB
-	api := handlers.NewAPIHandler(nil)
-	var mqttSvc *mqtt.MQTTService
+	api := handlers.NewAPIHandler(nil, cfg.AdminAPIKey)
+
+	// Decouple MQTT from DB: initialize MQTT service with decoupled ingestion processor
+	mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, api)
+	if err := mqttSvc.Start(); err != nil {
+		log.Printf("[MQTT] Notice: Broker not yet connected (%s): %v. Auto-reconnect is active.", cfg.MQTTBrokerURL, err)
+	}
 
 	tryConnectDB := func() {
 		newDB, err := initDB(cfg)
@@ -94,17 +101,10 @@ func main() {
 			db = newDB
 			api.SetDB(newDB)
 			log.Println("[Success] Connected to TimescaleDB/PostgreSQL successfully.")
-
-			if mqttSvc == nil {
-				mqttSvc = mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, newDB)
-				if err := mqttSvc.Start(); err != nil {
-					log.Printf("[MQTT] Waiting for broker (%s): %v", cfg.MQTTBrokerURL, err)
-				}
-			}
 		}
 	}
 
-	// Initial connection attempt
+	// Initial database connection attempt
 	tryConnectDB()
 	if db == nil {
 		log.Println("[Notice] TimescaleDB on port 5433 not detected yet. Running with resilient in-memory cache until database is up.")
@@ -122,8 +122,18 @@ func main() {
 		}
 	}()
 
-	// HTTP Handlers & Router
+	// HTTP Handlers & Router (Go 1.22+ pattern routing)
 	mux := http.NewServeMux()
+
+	// Tenant Management
+	mux.HandleFunc("GET /api/v1/tenants", api.GetTenants)
+	mux.HandleFunc("POST /api/v1/tenants", api.CreateTenant)
+	mux.HandleFunc("DELETE /api/v1/tenants/{id}", api.AuthMiddleware(api.DeleteTenant))
+
+	// Channel Management
+	mux.HandleFunc("GET /api/v1/channels", api.GetChannels)
+	mux.HandleFunc("POST /api/v1/channels", api.CreateChannel)
+	mux.HandleFunc("DELETE /api/v1/channels/{id}", api.AuthMiddleware(api.DeleteChannel))
 
 	// Device Registry
 	mux.HandleFunc("GET /api/v1/devices", api.GetDevices)
@@ -136,9 +146,26 @@ func main() {
 	mux.HandleFunc("POST /api/v1/devices/{id}/telemetry", api.IngestDeviceTelemetry)
 	mux.HandleFunc("POST /api/v1/telemetry", api.IngestTelemetry)
 
-	// Device Management (Delete & Reset)
-	mux.HandleFunc("DELETE /api/v1/devices/{id}", api.DeleteDevice)
-	mux.HandleFunc("POST /api/v1/devices/reset", api.ResetDevices)
+	// Device Management (Protected by API Key / JWT Authentication)
+	mux.HandleFunc("DELETE /api/v1/devices/{id}", api.AuthMiddleware(api.DeleteDevice))
+	mux.HandleFunc("POST /api/v1/devices/reset", api.AuthMiddleware(api.ResetDevices))
+
+	// User Authentication & Management (JWT)
+	mux.HandleFunc("POST /api/v1/auth/register", api.Register)
+	mux.HandleFunc("POST /api/v1/auth/login", api.Login)
+	mux.HandleFunc("GET /api/v1/auth/me", api.AuthMiddleware(api.GetMe))
+	mux.HandleFunc("GET /api/v1/users", api.AuthMiddleware(api.GetUsers))
+
+	// Guardrail Threshold Rules Engine
+	mux.HandleFunc("GET /api/v1/rules", api.GetRules)
+	mux.HandleFunc("POST /api/v1/rules", api.AuthMiddleware(api.CreateRule))
+	mux.HandleFunc("DELETE /api/v1/rules/{id}", api.AuthMiddleware(api.DeleteRule))
+
+	// Alarms Management
+	mux.HandleFunc("GET /api/v1/alarms", api.GetAlarms)
+	mux.HandleFunc("POST /api/v1/alarms/{id}/acknowledge", api.AuthMiddleware(api.AcknowledgeAlarm))
+	mux.HandleFunc("POST /api/v1/alarms/{id}/resolve", api.AuthMiddleware(api.ResolveAlarm))
+	mux.HandleFunc("DELETE /api/v1/alarms/{id}", api.AuthMiddleware(api.DeleteAlarm))
 
 	// Healthcheck & Root
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -164,14 +191,31 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"message": "IoT Platform Backend API",
-			"version": "1.0.0",
+			"version": "1.2.0",
 			"endpoints": []string{
 				"GET  /health",
+				"POST /api/v1/auth/login",
+				"GET  /api/v1/auth/me (Protected)",
+				"GET  /api/v1/rules",
+				"POST /api/v1/rules (Protected)",
+				"DELETE /api/v1/rules/{id} (Protected)",
+				"GET  /api/v1/alarms",
+				"POST /api/v1/alarms/{id}/acknowledge (Protected)",
+				"POST /api/v1/alarms/{id}/resolve (Protected)",
+				"DELETE /api/v1/alarms/{id} (Protected)",
+				"GET  /api/v1/tenants",
+				"POST /api/v1/tenants",
+				"DELETE /api/v1/tenants/{id} (Protected)",
+				"GET  /api/v1/channels",
+				"POST /api/v1/channels",
+				"DELETE /api/v1/channels/{id} (Protected)",
 				"GET  /api/v1/devices",
 				"GET  /api/v1/devices/{id}/telemetry/latest",
 				"GET  /api/v1/devices/{id}/telemetry/history",
 				"POST /api/v1/devices/{id}/telemetry",
 				"POST /api/v1/telemetry",
+				"DELETE /api/v1/devices/{id} (Protected)",
+				"POST /api/v1/devices/reset (Protected)",
 			},
 		})
 	})
@@ -182,7 +226,7 @@ func main() {
 	corsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-API-Key")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

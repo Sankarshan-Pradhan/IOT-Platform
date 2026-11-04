@@ -84,9 +84,12 @@ When TimescaleDB boots for the first time, `init.sql` automatically runs the dat
    - `pgcrypto`: Generates RFC 4122 cryptographic UUIDs.
 
 2. **Tables**:
-   - `tenants`: Multi-tenant organization boundaries.
+   - `users`: User authentication accounts with bcrypt password hashes, contact details, and role (`admin` vs `user`).
+   - `tenants`: Multi-tenant organization boundaries with owner tracking (`owner_id`, `owner_name`, `owner_email`).
    - `channels`: Logical telemetry channels and MQTT routing definitions.
    - `devices`: Registered edge microcontrollers (`ESP32`, status `online`/`offline`).
+   - `rules`: Dynamic threshold guardrail safety policies.
+   - `alarms`: Real-time triggered and historical threshold violation records.
    - `telemetry` *(Hypertable)*: Append-only time-series table partitioned into 7-day chunks.
    - `latest_telemetry` *(Snapshot Cache)*: Fast $O(1)$ table storing the most recent reading for each device.
 

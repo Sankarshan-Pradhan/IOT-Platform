@@ -1,9 +1,7 @@
 package mqtt
 
 import (
-	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -11,18 +9,19 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 )
 
+// IngestionProcessor interface allows MQTT service to ingest data into
+// either memory cache or TimescaleDB without coupling to the database.
+type IngestionProcessor interface {
+	ProcessTelemetry(tenantID, channelID, deviceID string, telemetryTime time.Time, payloadData []byte) error
+}
+
 type MQTTService struct {
-	client paho.Client
-	db     *sql.DB
+	client    paho.Client
+	processor IngestionProcessor
 }
 
-type Config struct {
-	BrokerURL string
-	ClientID  string
-}
-
-func NewMQTTService(brokerURL, clientID string, db *sql.DB) *MQTTService {
-	svc := &MQTTService{db: db}
+func NewMQTTService(brokerURL, clientID string, processor IngestionProcessor) *MQTTService {
+	svc := &MQTTService{processor: processor}
 
 	opts := paho.NewClientOptions()
 	opts.AddBroker(brokerURL)
@@ -61,9 +60,11 @@ func (s *MQTTService) Stop() {
 
 func (s *MQTTService) subscribe() {
 	topics := map[string]byte{
-		"devices/+/telemetry":           1,
-		"tenants/+/devices/+/telemetry": 1,
-		"iot/telemetry":                 1,
+		"devices/+/telemetry":                           1,
+		"tenants/+/devices/+/telemetry":                 1,
+		"channels/+/telemetry":                          1,
+		"tenants/+/channels/+/devices/+/telemetry":      1,
+		"iot/telemetry":                                 1,
 	}
 
 	for topic, qos := range topics {
@@ -80,6 +81,7 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 	payload := msg.Payload()
 
 	var tenantID string
+	var channelID string
 	var deviceID string
 
 	parts := strings.Split(topic, "/")
@@ -88,6 +90,12 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 	} else if len(parts) == 5 && parts[0] == "tenants" && parts[2] == "devices" && parts[4] == "telemetry" {
 		tenantID = parts[1]
 		deviceID = parts[3]
+	} else if len(parts) == 3 && parts[0] == "channels" && parts[2] == "telemetry" {
+		channelID = parts[1]
+	} else if len(parts) == 7 && parts[0] == "tenants" && parts[2] == "channels" && parts[4] == "devices" && parts[6] == "telemetry" {
+		tenantID = parts[1]
+		channelID = parts[3]
+		deviceID = parts[5]
 	}
 
 	var rawObj map[string]interface{}
@@ -96,7 +104,7 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 		return
 	}
 
-	// If deviceID was not in topic (e.g. iot/telemetry), try reading from payload
+	// Read deviceID from payload if not in topic
 	if deviceID == "" {
 		if d, ok := rawObj["device_id"].(string); ok && d != "" {
 			deviceID = d
@@ -116,6 +124,12 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 		}
 	}
 
+	if channelID == "" {
+		if c, ok := rawObj["channel_id"].(string); ok && c != "" {
+			channelID = c
+		}
+	}
+
 	// Parse timestamp if present
 	telemetryTime := time.Now().UTC()
 	for _, timeField := range []string{"time", "timestamp", "ts"} {
@@ -125,7 +139,7 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 				if parsed, err := time.Parse(time.RFC3339, val); err == nil {
 					telemetryTime = parsed
 				}
-			case float64: // Unix timestamp in seconds or milliseconds
+			case float64:
 				if val > 1e12 {
 					telemetryTime = time.UnixMilli(int64(val)).UTC()
 				} else {
@@ -146,63 +160,13 @@ func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 		sensorPayload = payload
 	}
 
-	// Resolve or auto-register device
-	resolvedTenantID, err := s.ensureDevice(tenantID, deviceID)
-	if err != nil {
-		log.Printf("[MQTT] Failed to ensure device %s: %v", deviceID, err)
-		return
+	// Process telemetry via decoupled ingestion processor
+	if s.processor != nil {
+		if err := s.processor.ProcessTelemetry(tenantID, channelID, deviceID, telemetryTime, sensorPayload); err != nil {
+			log.Printf("[MQTT] Error processing telemetry for %s: %v", deviceID, err)
+			return
+		}
 	}
 
-	// Insert into telemetry table
-	query := `
-		INSERT INTO telemetry (time, tenant_id, device_id, payload)
-		VALUES ($1, $2, $3, $4);
-	`
-	if _, err := s.db.Exec(query, telemetryTime, resolvedTenantID, deviceID, sensorPayload); err != nil {
-		log.Printf("[MQTT] Error inserting telemetry for %s: %v", deviceID, err)
-		return
-	}
-
-	// Update device status to online
-	_, _ = s.db.Exec(
-		"UPDATE devices SET status = 'online', updated_at = NOW() WHERE tenant_id = $1 AND device_id = $2",
-		resolvedTenantID, deviceID,
-	)
-
-	log.Printf("[MQTT] Successfully ingested telemetry for device: %s (time: %s)", deviceID, telemetryTime.Format(time.RFC3339))
-}
-
-func (s *MQTTService) ensureDevice(tenantID, deviceID string) (string, error) {
-	// Check if device already exists
-	var existingTenantID string
-	checkQuery := `SELECT tenant_id FROM devices WHERE device_id = $1 LIMIT 1;`
-	err := s.db.QueryRow(checkQuery, deviceID).Scan(&existingTenantID)
-	if err == nil {
-		return existingTenantID, nil
-	}
-
-	// Default tenant if none provided
-	if tenantID == "" {
-		tenantID = "a0000000-0000-0000-0000-000000000001"
-	}
-
-	// Ensure tenant exists in tenants table
-	_, _ = s.db.Exec(`
-		INSERT INTO tenants (id, name, slug)
-		VALUES ($1, 'Workspace ' || SUBSTRING($1::text, 1, 8), 'workspace-' || SUBSTRING($1::text, 1, 8))
-		ON CONFLICT (id) DO NOTHING;
-	`, tenantID)
-
-	insertQuery := `
-		INSERT INTO devices (tenant_id, device_id, name, device_type, status)
-		VALUES ($1, $2, $2, 'generic', 'online')
-		ON CONFLICT (tenant_id, device_id) DO UPDATE SET status = 'online', updated_at = NOW()
-		RETURNING tenant_id;
-	`
-	var retTenantID string
-	err = s.db.QueryRow(insertQuery, tenantID, deviceID).Scan(&retTenantID)
-	if err != nil {
-		return "", fmt.Errorf("failed to auto-register device: %w", err)
-	}
-	return retTenantID, nil
+	log.Printf("[MQTT] Ingested telemetry for device: %s (time: %s)", deviceID, telemetryTime.Format(time.RFC3339))
 }

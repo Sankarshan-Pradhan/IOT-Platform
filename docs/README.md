@@ -19,15 +19,20 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
    - $O(1)$ `latest_telemetry` snapshot table synchronized via high-performance SQL triggers.
 
 3. **[Go Backend Service Architecture](../backend/README.md)**
-   - REST API specifications (`/health`, `/devices`, `/telemetry/latest`, `/telemetry/history`).
+   - REST API specifications (`/health`, `/api/v1/auth/register`, `/api/v1/auth/login`, `/api/v1/users`, `/api/v1/tenants`, `/api/v1/channels`, `/api/v1/devices`, `/api/v1/rules`, `/api/v1/alarms`, `/api/v1/telemetry`).
+   - Bcrypt password hashing, JWT session tokens, and backward-compatible `ADMIN_API_KEY` authentication middleware.
    - MQTT Paho subscriber architecture and device auto-registration.
    - Resilient in-memory fallback cache with background reconnect goroutines.
+   - Comprehensive unit test suite (`go test ./...`) and GitHub Actions CI workflow.
 
 4. **[Frontend Dashboard & Edge Management UI](../frontend/README.md)**
-   - Real-time 5-second polling engine and countdown timer.
-   - Light & Dark mode architecture.
-   - Built-in Cryptographic Key Generator & C++ `config.h` builder.
-   - Multi-tenant workspace and channel management.
+   - Dedicated initial Login & Registration gate portal (`AuthScreen.jsx`).
+   - Automatic role-based routing into two dedicated pages:
+     - **Admin Page (`AdminDashboard.jsx`)**: Supervisory Mission Control, Registered Users Directory, cross-user workspaces inspection, and read-only telemetry.
+     - **User Page (`UserDashboard.jsx`)**: Personal workspaces, full device CRUD, telemetry routing channels, and safety guardrails.
+   - Intuitive top-down navigation hierarchy: Workspaces (Top) → Live Dashboard → Clients & Devices → Groups & Channels.
+   - Real-time 5-second polling engine and live countdown ticker.
+   - Standardized clean enterprise Light Theme architecture.
 
 5. **[ESP32 Edge Firmware & Simulator](../firmware/README.md)**
    - Non-blocking C++ cooperative firmware.
@@ -69,6 +74,7 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
 |         - Resolves & Validates Tenant UUID                              |
 |         - Auto-Registers new devices with 'online' status               |
 |         - In-Memory Fallback Cache if DB is offline                     |
+|         - Protected Deletion REST APIs with API Key Auth                |
 +-----------------------------------|-------------------------------------+
                                     |
           +-------------------------+-------------------------+
@@ -78,9 +84,10 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
 |          PERSISTENCE LAYER        |   |        PRESENTATION LAYER       |
 |                                   |   |                                 |
 |     TimescaleDB (PostgreSQL 16)   |   |   React 18 + Vite Web Dashboard |
-|  - telemetry (Hypertable)         |   |   - 5s Polling Engine with Timer|
-|  - latest_telemetry (Cache O(1))  |   |   - Light / Dark Mode Toggle    |
-|  - tenants, channels, devices     |   |   - Dual Y-Axis Chart.js Charts |
+|  - telemetry (Hypertable)         |   |   - Top: Workspaces Management  |
+|  - latest_telemetry (Cache O(1))  |   |   - 5s Polling Engine with Timer|
+|  - Cascading Foreign Keys         |   |   - Clean Enterprise Light Theme|
+|  - Cascading Foreign Keys         |   |   - Dual Y-Axis Chart.js Charts |
 +-----------------------------------+   +---------------------------------+
 ```
 
@@ -92,7 +99,5 @@ The platform enforces clean organizational isolation at all levels:
 
 1. **Tenant Isolation**: Every device belongs to a specific `tenant_id` (UUID). Telemetry is indexed and queried with `tenant_id` partition keys.
 2. **Channel Routing**: Devices stream data on logical channels (e.g. `devices/+/telemetry`), which can be grouped by physical installation bay or monitoring domain.
-3. **Cryptographic Credentials**:
-   - The frontend Key Generator produces unique Tenant UUIDs, Channel IDs, and Secret Keys (`iot_sec_...`).
-   - These are compiled directly into the ESP32 firmware config, guaranteeing that telemetry packets include correct authorization headers.
-4. **Authoritative Backend**: When a device registers or is removed, the backend database and in-memory caches synchronize immediately, ensuring the dashboard reflects the real-world state of the hardware.
+3. **API Security Middleware**: Deletion and reset operations require `X-API-Key` or `Authorization: Bearer <key>` authentication, protecting production resources from unauthorized purges.
+4. **Authoritative Backend**: When a device, channel, or workspace is deleted, the backend database and in-memory caches synchronize immediately, ensuring the dashboard reflects the authoritative state of the hardware.

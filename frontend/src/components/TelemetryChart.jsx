@@ -33,12 +33,11 @@ export default function TelemetryChart({
   isCompareMode = false,
   secondDeviceHistory = [],
   secondDeviceId = '',
-  theme = 'dark',
 }) {
   const [showTemp, setShowTemp] = useState(true);
   const [showHum, setShowHum] = useState(true);
 
-  const isDark = theme === 'dark';
+  const isDark = false;
 
   const labels = historyData.map((item) => {
     const d = new Date(item.time);

@@ -8,20 +8,70 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 
+-- 1.5 Users Table (User accounts, profiles & credentials)
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(64) PRIMARY KEY,
+    username VARCHAR(64) UNIQUE NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    email VARCHAR(128) UNIQUE NOT NULL,
+    mobile VARCHAR(32) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'user',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
 -- 2. Tenants Table (Multi-tenancy foundation)
 CREATE TABLE IF NOT EXISTS tenants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
+    owner_id VARCHAR(64),
+    owner_name VARCHAR(128),
+    owner_email VARCHAR(128),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 3. Devices Table (Device registry per tenant)
+CREATE INDEX IF NOT EXISTS idx_tenants_owner_id ON tenants(owner_id);
+
+-- Migration safety: ensure owner columns exist if tenants table was previously created
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'tenants' AND column_name = 'owner_id'
+    ) THEN
+        ALTER TABLE tenants ADD COLUMN owner_id VARCHAR(64);
+        ALTER TABLE tenants ADD COLUMN owner_name VARCHAR(128);
+        ALTER TABLE tenants ADD COLUMN owner_email VARCHAR(128);
+        CREATE INDEX IF NOT EXISTS idx_tenants_owner_id ON tenants(owner_id);
+    END IF;
+END $$;
+
+-- 2.1 Channels Table (Logical telemetry groups & MQTT topic partitions)
+CREATE TABLE IF NOT EXISTS channels (
+    id VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    group_name VARCHAR(100) NOT NULL DEFAULT 'General',
+    topic VARCHAR(255) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_channels_tenant_id ON channels(tenant_id);
+
+-- 3. Devices Table (Device registry per tenant linked optionally to channels)
 CREATE TABLE IF NOT EXISTS devices (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    channel_id VARCHAR(100) REFERENCES channels(id) ON DELETE SET NULL,
     device_id VARCHAR(100) NOT NULL,
     name VARCHAR(255) NOT NULL,
     device_type VARCHAR(100) DEFAULT 'generic',
@@ -33,7 +83,20 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 
 CREATE INDEX IF NOT EXISTS idx_devices_tenant_id ON devices(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_devices_channel_id ON devices(channel_id);
 CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+
+-- Migration safety: ensure channel_id column exists if table was previously created
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'devices' AND column_name = 'channel_id'
+    ) THEN
+        ALTER TABLE devices ADD COLUMN channel_id VARCHAR(100) REFERENCES channels(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_devices_channel_id ON devices(channel_id);
+    END IF;
+END $$;
 
 -- 4. Telemetry Table (Time-series hypertable for high-throughput metrics)
 CREATE TABLE IF NOT EXISTS telemetry (
@@ -92,13 +155,102 @@ AFTER INSERT ON telemetry
 FOR EACH ROW
 EXECUTE FUNCTION update_latest_telemetry_trigger();
 
+-- 6.5 Seed Default Admin User (Password: admin123)
+INSERT INTO users (id, username, name, email, mobile, password_hash, role)
+VALUES (
+    'usr-admin-system-001',
+    'admin',
+    'System Administrator',
+    'admin@iot-platform.local',
+    '+1-555-0100',
+    -- standard bcrypt hash for "admin123"
+    '$2a$10$tZ26fJm69D6iN4mNfE63/eT619P9aQ5fB016d9R9uS9q1p4yH7F3O',
+    'admin'
+)
+ON CONFLICT (username) DO NOTHING;
+
 -- 7. Seed Default Tenant
-INSERT INTO tenants (id, name, slug, description)
+INSERT INTO tenants (id, name, slug, description, owner_id, owner_name, owner_email)
 VALUES (
     'a0000000-0000-0000-0000-000000000001',
     'Default Organization',
     'default-org',
-    'Default multi-tenant workspace'
+    'Default multi-tenant workspace with TimescaleDB hypertable isolation.',
+    'usr-admin-system-001',
+    'System Administrator',
+    'admin@iot-platform.local'
 )
 ON CONFLICT (slug) DO NOTHING;
 
+-- 8. Seed Default Channels
+INSERT INTO channels (id, tenant_id, name, group_name, topic, description)
+VALUES 
+(
+    'chan-dht22-alpha',
+    'a0000000-0000-0000-0000-000000000001',
+    'Laboratory Environmental Sensors',
+    'Environmental Monitoring',
+    'devices/+/telemetry',
+    'DHT22 sensors streaming temperature and humidity every 5s.'
+),
+(
+    'chan-hvac-zone1',
+    'a0000000-0000-0000-0000-000000000001',
+    'Server Room HVAC Control',
+    'Server Room HVAC',
+    'channels/chan-hvac-zone1/telemetry',
+    'Critical cooling and humidity threshold telemetry.'
+)
+ON CONFLICT (id) DO NOTHING;
+
+-- 9. Rules Table (Dynamic threshold guardrails)
+CREATE TABLE IF NOT EXISTS rules (
+    id VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    device_id VARCHAR(100),
+    field VARCHAR(100) NOT NULL,
+    operator VARCHAR(10) NOT NULL,
+    threshold DOUBLE PRECISION NOT NULL,
+    severity VARCHAR(50) NOT NULL DEFAULT 'CRITICAL',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rules_tenant_id ON rules(tenant_id);
+
+-- 10. Alarms Table (Triggered guardrail alarm events)
+CREATE TABLE IF NOT EXISTS alarms (
+    id VARCHAR(100) PRIMARY KEY,
+    tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    rule_id VARCHAR(100) REFERENCES rules(id) ON DELETE SET NULL,
+    device_id VARCHAR(100) NOT NULL,
+    rule_name VARCHAR(255) NOT NULL,
+    severity VARCHAR(50) NOT NULL DEFAULT 'CRITICAL',
+    status VARCHAR(50) NOT NULL DEFAULT 'OPEN',
+    trigger_value DOUBLE PRECISION NOT NULL,
+    threshold DOUBLE PRECISION NOT NULL,
+    message TEXT NOT NULL,
+    triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_alarms_tenant_status ON alarms(tenant_id, status);
+CREATE INDEX IF NOT EXISTS idx_alarms_triggered_at ON alarms(triggered_at DESC);
+
+-- Seed Default Overheat Guardrail Rule (temperature_c > 35.0)
+INSERT INTO rules (id, tenant_id, name, description, field, operator, threshold, severity, enabled)
+VALUES (
+    'rule-temp-overheat',
+    'a0000000-0000-0000-0000-000000000001',
+    'High Temperature Overheat Guardrail',
+    'Triggers an OPEN alarm when ambient temperature exceeds 35.0°C safety threshold.',
+    'temperature_c',
+    '>',
+    35.0,
+    'CRITICAL',
+    TRUE
+)
+ON CONFLICT (id) DO NOTHING;
