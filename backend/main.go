@@ -91,6 +91,7 @@ func main() {
 
 	// Decouple MQTT from DB: initialize MQTT service with decoupled ingestion processor
 	mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, api)
+	api.SetMQTTPublisher(mqttSvc)
 	if err := mqttSvc.Start(); err != nil {
 		log.Printf("[MQTT] Notice: Broker not yet connected (%s): %v. Auto-reconnect is active.", cfg.MQTTBrokerURL, err)
 	}
@@ -138,23 +139,38 @@ func main() {
 	// Device Registry
 	mux.HandleFunc("GET /api/v1/devices", api.GetDevices)
 
-	// Telemetry Queries
+	// Telemetry Queries, Export & Real-Time SSE Event Stream
 	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/latest", api.GetLatestTelemetry)
 	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/history", api.GetTelemetryHistory)
+	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/export", api.ExportTelemetry)
+	mux.HandleFunc("GET /api/v1/telemetry/stream", api.StreamTelemetry)
 
 	// Telemetry Ingestion (HTTP)
 	mux.HandleFunc("POST /api/v1/devices/{id}/telemetry", api.IngestDeviceTelemetry)
 	mux.HandleFunc("POST /api/v1/telemetry", api.IngestTelemetry)
 
-	// Device Management (Protected by API Key / JWT Authentication)
+	// Device Management & Provisioning
+	mux.HandleFunc("POST /api/v1/devices/{id}/token", api.AuthMiddleware(api.RegenerateDeviceToken))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", api.AuthMiddleware(api.DeleteDevice))
 	mux.HandleFunc("POST /api/v1/devices/reset", api.AuthMiddleware(api.ResetDevices))
+
+	// Downlink Device Control & Actuation Commands
+	mux.HandleFunc("POST /api/v1/devices/{id}/commands", api.AuthMiddleware(api.SendCommand))
+	mux.HandleFunc("GET /api/v1/devices/{id}/commands", api.AuthMiddleware(api.GetDeviceCommands))
+	mux.HandleFunc("POST /api/v1/devices/{id}/command_ack", api.AcknowledgeCommandHTTP)
+
+	// Over-the-Air (OTA) Updates & Firmware Distribution
+	mux.HandleFunc("POST /api/v1/devices/{id}/ota", api.AuthMiddleware(api.TriggerDeviceOTA))
+	mux.HandleFunc("POST /api/v1/ota/firmware", api.AuthMiddleware(api.UploadFirmware))
+	mux.HandleFunc("GET /api/v1/ota/firmware", api.AuthMiddleware(api.ListFirmwares))
+	mux.HandleFunc("GET /api/v1/ota/firmware/{filename}", api.GetFirmwareBinary)
 
 	// User Authentication & Management (JWT)
 	mux.HandleFunc("POST /api/v1/auth/register", api.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", api.Login)
 	mux.HandleFunc("GET /api/v1/auth/me", api.AuthMiddleware(api.GetMe))
 	mux.HandleFunc("GET /api/v1/users", api.AuthMiddleware(api.GetUsers))
+	mux.HandleFunc("DELETE /api/v1/users/{id}", api.AuthMiddleware(api.DeleteUser))
 
 	// Guardrail Threshold Rules Engine
 	mux.HandleFunc("GET /api/v1/rules", api.GetRules)
@@ -166,6 +182,12 @@ func main() {
 	mux.HandleFunc("POST /api/v1/alarms/{id}/acknowledge", api.AuthMiddleware(api.AcknowledgeAlarm))
 	mux.HandleFunc("POST /api/v1/alarms/{id}/resolve", api.AuthMiddleware(api.ResolveAlarm))
 	mux.HandleFunc("DELETE /api/v1/alarms/{id}", api.AuthMiddleware(api.DeleteAlarm))
+
+	// Alarm Notification Dispatchers (Alert Channels: Slack, Discord, Webhooks)
+	mux.HandleFunc("GET /api/v1/notifications/channels", api.AuthMiddleware(api.GetNotificationChannels))
+	mux.HandleFunc("POST /api/v1/notifications/channels", api.AuthMiddleware(api.CreateNotificationChannel))
+	mux.HandleFunc("DELETE /api/v1/notifications/channels/{id}", api.AuthMiddleware(api.DeleteNotificationChannel))
+	mux.HandleFunc("POST /api/v1/notifications/test", api.AuthMiddleware(api.TestNotificationChannel))
 
 	// Healthcheck & Root
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

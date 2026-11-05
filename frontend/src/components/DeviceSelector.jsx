@@ -112,10 +112,10 @@ export default function DeviceSelector({
                 onSelectDevice(device.device_id);
                 if (viewMode === 'compare') setViewMode('single');
               }}
-              className={`cursor-pointer rounded-2xl p-4 transition-all duration-200 border text-left relative overflow-hidden group shadow-sm ${
+              className={`cursor-pointer rounded-2xl p-4 transition-colors border text-left relative overflow-hidden group shadow-xs ${
                 isSelected
-                  ? 'bg-white dark:bg-slate-900 border-emerald-500 dark:border-emerald-500/80 shadow-md ring-1 ring-emerald-500/40'
-                  : 'bg-white/80 hover:bg-white dark:bg-slate-900/60 dark:hover:bg-slate-900 border-slate-200 hover:border-slate-300 dark:border-slate-800 dark:hover:border-slate-700'
+                  ? 'bg-white dark:bg-slate-900 border-emerald-500 dark:border-emerald-500/80 ring-1 ring-emerald-500/40'
+                  : 'bg-white hover:bg-slate-50/50 dark:bg-slate-900/60 dark:hover:bg-slate-900 border-slate-200 hover:border-slate-300 dark:border-slate-800 dark:hover:border-slate-700'
               }`}
             >
               {isSelected && (

@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS devices (
     name VARCHAR(255) NOT NULL,
     device_type VARCHAR(100) DEFAULT 'generic',
     status VARCHAR(50) NOT NULL DEFAULT 'offline',
+    auth_token VARCHAR(128),
+    firmware_version VARCHAR(64) DEFAULT 'v1.0.0',
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -115,6 +117,83 @@ CREATE INDEX IF NOT EXISTS idx_telemetry_tenant_device_time ON telemetry (tenant
 
 -- GIN index on jsonb payload for flexible querying into sensor fields
 CREATE INDEX IF NOT EXISTS idx_telemetry_payload ON telemetry USING GIN (payload);
+
+-- 4.1 TimescaleDB Continuous Aggregates (1-Minute, 5-Minute, 1-Hour Rollups)
+CREATE MATERIALIZED VIEW IF NOT EXISTS telemetry_1m
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 minute', time) AS bucket,
+    tenant_id,
+    device_id,
+    AVG((payload->>'temperature_c')::double precision) AS avg_temperature,
+    MIN((payload->>'temperature_c')::double precision) AS min_temperature,
+    MAX((payload->>'temperature_c')::double precision) AS max_temperature,
+    AVG((payload->>'humidity_pct')::double precision) AS avg_humidity,
+    MIN((payload->>'humidity_pct')::double precision) AS min_humidity,
+    MAX((payload->>'humidity_pct')::double precision) AS max_humidity,
+    AVG((payload->>'wifi_rssi')::double precision) AS avg_wifi_rssi,
+    COUNT(*) AS sample_count
+FROM telemetry
+GROUP BY bucket, tenant_id, device_id
+WITH NO DATA;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS telemetry_5m
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('5 minutes', time) AS bucket,
+    tenant_id,
+    device_id,
+    AVG((payload->>'temperature_c')::double precision) AS avg_temperature,
+    MIN((payload->>'temperature_c')::double precision) AS min_temperature,
+    MAX((payload->>'temperature_c')::double precision) AS max_temperature,
+    AVG((payload->>'humidity_pct')::double precision) AS avg_humidity,
+    MIN((payload->>'humidity_pct')::double precision) AS min_humidity,
+    MAX((payload->>'humidity_pct')::double precision) AS max_humidity,
+    AVG((payload->>'wifi_rssi')::double precision) AS avg_wifi_rssi,
+    COUNT(*) AS sample_count
+FROM telemetry
+GROUP BY bucket, tenant_id, device_id
+WITH NO DATA;
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS telemetry_1h
+WITH (timescaledb.continuous) AS
+SELECT
+    time_bucket('1 hour', time) AS bucket,
+    tenant_id,
+    device_id,
+    AVG((payload->>'temperature_c')::double precision) AS avg_temperature,
+    MIN((payload->>'temperature_c')::double precision) AS min_temperature,
+    MAX((payload->>'temperature_c')::double precision) AS max_temperature,
+    AVG((payload->>'humidity_pct')::double precision) AS avg_humidity,
+    MIN((payload->>'humidity_pct')::double precision) AS min_humidity,
+    MAX((payload->>'humidity_pct')::double precision) AS max_humidity,
+    AVG((payload->>'wifi_rssi')::double precision) AS avg_wifi_rssi,
+    COUNT(*) AS sample_count
+FROM telemetry
+GROUP BY bucket, tenant_id, device_id
+WITH NO DATA;
+
+-- 4.2 Continuous Aggregate Refresh Policies
+SELECT add_continuous_aggregate_policy('telemetry_1m',
+    start_offset => INTERVAL '1 day',
+    end_offset => INTERVAL '1 minute',
+    schedule_interval => INTERVAL '1 minute',
+    if_not_exists => TRUE);
+
+SELECT add_continuous_aggregate_policy('telemetry_5m',
+    start_offset => INTERVAL '7 days',
+    end_offset => INTERVAL '5 minutes',
+    schedule_interval => INTERVAL '5 minutes',
+    if_not_exists => TRUE);
+
+SELECT add_continuous_aggregate_policy('telemetry_1h',
+    start_offset => INTERVAL '30 days',
+    end_offset => INTERVAL '1 hour',
+    schedule_interval => INTERVAL '1 hour',
+    if_not_exists => TRUE);
+
+-- 4.3 Retention Policy: Drop raw hypertable chunks older than 30 days
+SELECT add_retention_policy('telemetry', INTERVAL '30 days', if_not_exists => TRUE);
 
 -- 5. Latest Telemetry Table (State cache for real-time dashboard lookups)
 CREATE TABLE IF NOT EXISTS latest_telemetry (

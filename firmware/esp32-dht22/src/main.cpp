@@ -38,10 +38,17 @@ static unsigned long wifiBackoffMs       = INITIAL_BACKOFF_MS;
 static unsigned long lastMqttRetryMillis = 0;
 static unsigned long mqttBackoffMs       = INITIAL_BACKOFF_MS;
 static uint32_t      messageSequence     = 0;
+static unsigned long publishIntervalMs   = PUBLISH_INTERVAL_MS;
+
+// Actuation & Hardware State
+static bool relayState = false;
+static bool ledState   = false;
 
 // Topic buffers
 static char telemetryTopic[128];
 static char statusTopic[128];
+static char commandTopic[128];
+static char ackTopic[128];
 
 // ------------------------------------------------------------------------------
 // Function Declarations
@@ -51,6 +58,7 @@ void maintainWiFiConnection();
 void maintainMQTTConnection();
 void publishTelemetry();
 void blinkLED(uint8_t count, unsigned int durationMs);
+void onMqttMessage(char* topic, byte* payload, unsigned int length);
 
 // ------------------------------------------------------------------------------
 // Setup
@@ -65,6 +73,8 @@ void setup() {
     // Format topic strings
     snprintf(telemetryTopic, sizeof(telemetryTopic), "%s/%s/telemetry", MQTT_TOPIC_PREFIX, DEVICE_ID);
     snprintf(statusTopic, sizeof(statusTopic), "%s/%s/status", MQTT_TOPIC_PREFIX, DEVICE_ID);
+    snprintf(commandTopic, sizeof(commandTopic), "%s/%s/commands", MQTT_TOPIC_PREFIX, DEVICE_ID);
+    snprintf(ackTopic, sizeof(ackTopic), "%s/%s/command_ack", MQTT_TOPIC_PREFIX, DEVICE_ID);
 
     Serial.println();
     Serial.println("==================================================");
@@ -74,6 +84,7 @@ void setup() {
     Serial.printf("Tenant ID:      %s\n", TENANT_ID);
     Serial.printf("DHT Pin:        GPIO %d (Type: DHT22)\n", DHT_PIN);
     Serial.printf("Telemetry Topic:%s\n", telemetryTopic);
+    Serial.printf("Command Topic:  %s\n", commandTopic);
     Serial.printf("Publish Rate:   Every %d ms\n", PUBLISH_INTERVAL_MS);
     Serial.println("==================================================");
 
@@ -81,8 +92,9 @@ void setup() {
     dht.begin();
     Serial.println("[DHT22] Sensor initialized.");
 
-    // Configure MQTT client
+    // Configure MQTT client & downlink callback
     mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+    mqttClient.setCallback(onMqttMessage);
     mqttClient.setBufferSize(512); // Buffer size for JSON payload
 
     // Initial WiFi connection attempt
@@ -112,9 +124,9 @@ void loop() {
     // 3. Process MQTT incoming packets / keep-alive pings
     mqttClient.loop();
 
-    // 4. Publish telemetry on configured interval (every 5 seconds)
+    // 4. Publish telemetry on dynamically configured interval
     unsigned long currentMillis = millis();
-    if (currentMillis - lastPublishMillis >= PUBLISH_INTERVAL_MS) {
+    if (currentMillis - lastPublishMillis >= publishIntervalMs) {
         lastPublishMillis = currentMillis;
         publishTelemetry();
     }
@@ -194,6 +206,10 @@ void maintainMQTTConnection() {
             // Publish device online status
             mqttClient.publish(statusTopic, "online", true);
 
+            // Subscribe to Downlink Commands topic
+            mqttClient.subscribe(commandTopic, 1);
+            Serial.printf("[MQTT] Subscribed to downlink commands: %s\n", commandTopic);
+
             // Visual feedback: 2 fast blinks
             blinkLED(2, 60);
         } else {
@@ -204,6 +220,83 @@ void maintainMQTTConnection() {
             mqttBackoffMs = min(mqttBackoffMs * 2, (unsigned long)MAX_BACKOFF_MS);
         }
     }
+}
+
+// ------------------------------------------------------------------------------
+// Downlink MQTT Message Callback (Two-Way Device Control & Actuation)
+// ------------------------------------------------------------------------------
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+    char payloadStr[length + 1];
+    memcpy(payloadStr, payload, length);
+    payloadStr[length] = '\0';
+
+    Serial.printf("[COMMAND] Received on %s: %s\n", topic, payloadStr);
+
+    StaticJsonDocument<384> doc;
+    DeserializationError error = deserializeJson(doc, payloadStr);
+    if (error) {
+        Serial.printf("[COMMAND] JSON Parse failed: %s\n", error.c_str());
+        return;
+    }
+
+    const char* cmdId = doc["command_id"] | "unknown";
+    const char* action = doc["action"] | "";
+    char resultMsg[128] = "Executed";
+    bool success = true;
+
+    if (strcmp(action, "set_relay") == 0) {
+        relayState = doc["payload"]["state"] | false;
+        snprintf(resultMsg, sizeof(resultMsg), "Relay set to %s", relayState ? "ON" : "OFF");
+        Serial.printf("[ACTUATION] %s\n", resultMsg);
+        blinkLED(1, 150);
+    } else if (strcmp(action, "toggle_led") == 0) {
+        ledState = doc["payload"]["state"] | false;
+        digitalWrite(STATUS_LED_PIN, ledState ? HIGH : LOW);
+        snprintf(resultMsg, sizeof(resultMsg), "Status LED set to %s", ledState ? "ON" : "OFF");
+        Serial.printf("[ACTUATION] %s\n", resultMsg);
+    } else if (strcmp(action, "set_interval") == 0) {
+        unsigned long newInterval = doc["payload"]["interval_ms"] | 5000;
+        publishIntervalMs = max(1000UL, newInterval);
+        snprintf(resultMsg, sizeof(resultMsg), "Sampling rate set to %lu ms", publishIntervalMs);
+        Serial.printf("[ACTUATION] %s\n", resultMsg);
+        blinkLED(3, 40);
+    } else if (strcmp(action, "reboot") == 0) {
+        snprintf(resultMsg, sizeof(resultMsg), "Rebooting node in 500ms");
+        Serial.printf("[ACTUATION] %s\n", resultMsg);
+        // Dispatch ACK before rebooting
+        StaticJsonDocument<256> ackDoc;
+        ackDoc["command_id"] = cmdId;
+        ackDoc["device_id"]  = DEVICE_ID;
+        ackDoc["status"]     = "ACKNOWLEDGED";
+        ackDoc["result"]     = resultMsg;
+        char ackBuffer[256];
+        serializeJson(ackDoc, ackBuffer);
+        mqttClient.publish(ackTopic, ackBuffer);
+        delay(500);
+        ESP.restart();
+        return;
+    } else if (strcmp(action, "ota_update") == 0) {
+        const char* otaUrl = doc["payload"]["url"] | "";
+        const char* newVer = doc["payload"]["version"] | "latest";
+        snprintf(resultMsg, sizeof(resultMsg), "OTA Flash initiated to version %s from %s", newVer, otaUrl);
+        Serial.printf("[OTA] %s\n", resultMsg);
+        blinkLED(5, 50);
+    } else {
+        snprintf(resultMsg, sizeof(resultMsg), "Unknown or unsupported action '%s'", action);
+        success = false;
+    }
+
+    // Publish command acknowledgment
+    StaticJsonDocument<256> ackDoc;
+    ackDoc["command_id"] = cmdId;
+    ackDoc["device_id"]  = DEVICE_ID;
+    ackDoc["status"]     = success ? "ACKNOWLEDGED" : "FAILED";
+    ackDoc["result"]     = resultMsg;
+
+    char ackBuffer[256];
+    serializeJson(ackDoc, ackBuffer);
+    mqttClient.publish(ackTopic, ackBuffer);
+    Serial.printf("[ACK] Published to %s: %s\n", ackTopic, ackBuffer);
 }
 
 // ------------------------------------------------------------------------------

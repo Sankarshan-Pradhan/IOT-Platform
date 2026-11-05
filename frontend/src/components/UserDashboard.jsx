@@ -12,6 +12,7 @@ import AddDeviceModal from './AddDeviceModal';
 import AddTenantModal from './AddTenantModal';
 import AddChannelModal from './AddChannelModal';
 import GuardrailsModal from './GuardrailsModal';
+import DeviceControlPanel from './DeviceControlPanel';
 import { OnboardingBanner, EmptyDashboardState } from './OnboardingGuide';
 import { 
   fetchHealth, 
@@ -34,9 +35,9 @@ import {
   resolveAlarm, 
   deleteAlarm 
 } from '../api';
-import { Sparkles, AlertCircle, Menu, Plus, Trash2 } from 'lucide-react';
+import { Sparkles, AlertCircle, Menu, Plus, Trash2, ArrowLeft } from 'lucide-react';
 
-export default function UserDashboard({ currentUser, onLogout }) {
+export default function UserDashboard({ currentUser, onLogout, adminUser, onBackToAdmin }) {
   // Navigation tabs: 'tenants' (Workspaces) | 'dashboard' (Live Dashboard) | 'devices' (Clients) | 'channels' (Groups)
   const [activeTab, setActiveTab] = useState('tenants');
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
@@ -79,13 +80,92 @@ export default function UserDashboard({ currentUser, onLogout }) {
   // UI preferences
   const [tempUnit, setTempUnit] = useState('C');
   const [limit, setLimit] = useState(50);
+  const [resolution, setResolution] = useState('raw');
   const [isPolling, setIsPolling] = useState(true);
   const [countdown, setCountdown] = useState(5);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState(null);
+  const [isSSEConnected, setIsSSEConnected] = useState(false);
 
   const selectedDeviceRef = useRef(selectedDeviceId);
   selectedDeviceRef.current = selectedDeviceId;
+
+  // Real-Time Server-Sent Events (SSE) Stream Subscriber
+  useEffect(() => {
+    const sseUrl = `${import.meta.env.VITE_API_URL || ''}/api/v1/telemetry/stream`;
+    let eventSource = null;
+
+    try {
+      eventSource = new EventSource(sseUrl);
+
+      eventSource.addEventListener('connected', () => {
+        setIsSSEConnected(true);
+      });
+
+      eventSource.addEventListener('telemetry', (e) => {
+        try {
+          const lt = JSON.parse(e.data);
+          if (!lt || !lt.device_id) return;
+
+          setLatestDataMap((prev) => {
+            const oldReading = prev[lt.device_id]?.payload;
+            const newReading = lt.payload;
+            if (oldReading && newReading && lt.device_id === selectedDeviceRef.current) {
+              setPrevTemp(oldReading.temperature_c ?? oldReading.temperature);
+              setPrevHum(oldReading.humidity_pct ?? oldReading.humidity);
+            }
+            return { ...prev, [lt.device_id]: lt };
+          });
+
+          if (lt.device_id === selectedDeviceRef.current) {
+            const newRecord = {
+              time: lt.time || new Date().toISOString(),
+              tenant_id: lt.tenant_id,
+              device_id: lt.device_id,
+              payload: lt.payload,
+            };
+            setHistoryData((prev) => {
+              const updated = [...prev, newRecord];
+              return updated.length > limit ? updated.slice(updated.length - limit) : updated;
+            });
+          }
+
+          setLastPolledAt(new Date());
+        } catch (err) {
+          console.warn('[SSE] Error processing telemetry event:', err);
+        }
+      });
+
+      eventSource.addEventListener('alarm', (e) => {
+        try {
+          const alarm = JSON.parse(e.data);
+          if (!alarm || !alarm.id) return;
+
+          setAlarms((prev) => {
+            const exists = prev.some((a) => a.id === alarm.id);
+            if (exists) {
+              return prev.map((a) => (a.id === alarm.id ? alarm : a));
+            }
+            return [alarm, ...prev];
+          });
+        } catch (err) {
+          console.warn('[SSE] Error processing alarm event:', err);
+        }
+      });
+
+      eventSource.onerror = () => {
+        setIsSSEConnected(false);
+      };
+    } catch (e) {
+      setIsSSEConnected(false);
+    }
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [limit]);
 
   // Load User Data
   const loadUserData = useCallback(async () => {
@@ -96,7 +176,18 @@ export default function UserDashboard({ currentUser, onLogout }) {
       setHealth(h);
 
       // 2. Fetch User's Workspaces (User-Scoped)
-      const userTenants = await fetchTenants();
+      const allTenants = await fetchTenants(currentUser?.id || currentUser?.username || '');
+      let userTenants = allTenants || [];
+      if (Array.isArray(allTenants) && currentUser) {
+        if (currentUser.role !== 'admin') {
+          userTenants = allTenants.filter((t) => 
+            t.owner_id === currentUser.id || 
+            t.owner_id === currentUser.username || 
+            (currentUser.email && t.owner_email === currentUser.email)
+          );
+        }
+      }
+
       if (Array.isArray(userTenants) && userTenants.length > 0) {
         setTenants(userTenants);
         setActiveTenant((curr) => {
@@ -106,6 +197,16 @@ export default function UserDashboard({ currentUser, onLogout }) {
           }
           return userTenants[0];
         });
+      } else {
+        setTenants([]);
+        setActiveTenant(null);
+        setChannels([]);
+        setDevices([]);
+        setAlarms([]);
+        setRules([]);
+        setSelectedDeviceId('');
+        setHistoryData([]);
+        setLatestDataMap({});
       }
 
       // 3. Fetch Channels for active workspace
@@ -145,7 +246,7 @@ export default function UserDashboard({ currentUser, onLogout }) {
       if (devId) {
         const [latest, hist] = await Promise.all([
           fetchLatestTelemetry(devId),
-          fetchTelemetryHistory(devId, limit),
+          fetchTelemetryHistory(devId, limit, 'ASC', resolution),
         ]);
 
         if (latest) {
@@ -170,7 +271,7 @@ export default function UserDashboard({ currentUser, onLogout }) {
     } finally {
       setIsRefreshing(false);
     }
-  }, [activeTenant?.id, limit]);
+  }, [activeTenant?.id, limit, resolution]);
 
   // Initial load
   useEffect(() => {
@@ -195,7 +296,13 @@ export default function UserDashboard({ currentUser, onLogout }) {
   // Workspace Actions
   const handleAddTenant = async (tenantData) => {
     try {
-      const created = await createTenant(tenantData);
+      const payload = {
+        ...tenantData,
+        owner_id: currentUser?.id,
+        owner_name: currentUser?.name || currentUser?.username,
+        owner_email: currentUser?.email,
+      };
+      const created = await createTenant(payload);
       setTenants((prev) => [...prev, created]);
       setActiveTenant(created);
       setIsAddTenantModalOpen(false);
@@ -366,6 +473,9 @@ export default function UserDashboard({ currentUser, onLogout }) {
           onOpenAddTenant={() => setIsAddTenantModalOpen(true)}
           onOpenAddDevice={() => setIsAddDeviceModalOpen(true)}
           isAdmin={false}
+          openAlarmsCount={alarms.filter((a) => a.status === 'OPEN').length}
+          onOpenGuardrailsModal={() => setIsGuardrailsOpen(true)}
+          onBackToAdmin={onBackToAdmin}
         />
       </div>
 
@@ -379,6 +489,29 @@ export default function UserDashboard({ currentUser, onLogout }) {
 
       {/* 2. Main User Dashboard Layout */}
       <div className="flex-1 flex flex-col min-w-0 min-h-screen">
+
+        {/* Administrator Impersonation / View-As Mode Banner */}
+        {adminUser && (
+          <div className="bg-amber-400 text-slate-950 px-4 py-2.5 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-xs border-b border-amber-500 sticky top-0 z-50">
+            <div className="flex items-center gap-2">
+              <span className="font-extrabold uppercase tracking-wider text-[10px] px-2 py-0.5 rounded-full bg-slate-950 text-amber-300 shadow-xs">
+                ADMIN ACCESS
+              </span>
+              <span className="text-xs font-semibold">
+                Viewing operator dashboard for <strong className="font-bold underline">{currentUser?.name || currentUser?.username}</strong> (@{currentUser?.username})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={onBackToAdmin}
+              className="self-start sm:self-auto px-3.5 py-1.5 rounded-xl bg-slate-950 hover:bg-slate-900 text-white font-bold text-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+              title="Return to Administrator Console"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 text-amber-400" />
+              <span>← Return to Admin Console</span>
+            </button>
+          </div>
+        )}
         
         {/* Top Header */}
         <div className="flex items-center">
@@ -408,6 +541,7 @@ export default function UserDashboard({ currentUser, onLogout }) {
               onOpenGuardrailsModal={() => setIsGuardrailsOpen(true)}
               currentUser={currentUser}
               onLogout={onLogout}
+              isSSEConnected={isSSEConnected}
             />
           </div>
         </div>
@@ -506,6 +640,8 @@ export default function UserDashboard({ currentUser, onLogout }) {
                     tempUnit={tempUnit}
                     limit={limit}
                     setLimit={setLimit}
+                    resolution={resolution}
+                    setResolution={setResolution}
                     isCompareMode={viewMode === 'compare' && Boolean(secondDeviceId)}
                     secondDeviceHistory={secondDeviceHistory}
                     secondDeviceId={secondDeviceId}
@@ -513,6 +649,12 @@ export default function UserDashboard({ currentUser, onLogout }) {
 
                   {/* Recent Ingestion Table */}
                   <RecentTable historyData={historyData} tempUnit={tempUnit} />
+
+                  {/* Two-Way Downlink Device Control & Actuation */}
+                  <DeviceControlPanel
+                    deviceId={selectedDeviceId}
+                    activeDeviceName={devices.find((d) => d.device_id === selectedDeviceId)?.name}
+                  />
                 </>
               ) : (
                 <EmptyDashboardState onAddDevice={() => setIsAddDeviceModalOpen(true)} isAdmin={false} />

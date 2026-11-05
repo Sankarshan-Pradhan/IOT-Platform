@@ -49,6 +49,52 @@ func main() {
 
 	log.Println("Connected to MQTT Broker!")
 
+	// Subscribe to Downlink Commands for simulated nodes
+	commandTopic := "devices/+/commands"
+	client.Subscribe(commandTopic, 1, func(c paho.Client, m paho.Message) {
+		topic := m.Topic()
+		payload := m.Payload()
+
+		var cmd struct {
+			CommandID string                 `json:"command_id"`
+			DeviceID  string                 `json:"device_id"`
+			Action    string                 `json:"action"`
+			Payload   map[string]interface{} `json:"payload"`
+		}
+		if err := json.Unmarshal(payload, &cmd); err == nil {
+			log.Printf("[DOWNLINK COMMAND] %s -> Action: %s, Payload: %v", topic, cmd.Action, cmd.Payload)
+			
+			// Simulate hardware actuation result
+			result := fmt.Sprintf("Simulated action '%s' executed successfully", cmd.Action)
+			if cmd.Action == "set_relay" {
+				state := cmd.Payload["state"]
+				result = fmt.Sprintf("Relay switched to state=%v", state)
+			} else if cmd.Action == "toggle_led" {
+				result = fmt.Sprintf("Status LED switched to state=%v", cmd.Payload["state"])
+			} else if cmd.Action == "set_interval" {
+				result = fmt.Sprintf("Telemetry interval adjusted to %v ms", cmd.Payload["interval_ms"])
+			} else if cmd.Action == "reboot" {
+				result = "Simulated ESP32 rebooted and reconnected"
+			} else if cmd.Action == "ota_update" {
+				ver := cmd.Payload["version"]
+				url := cmd.Payload["url"]
+				result = fmt.Sprintf("Simulated node successfully flashed OTA firmware %v from %v and rebooted", ver, url)
+			}
+
+			// Respond with ACK
+			ackTopic := fmt.Sprintf("devices/%s/command_ack", cmd.DeviceID)
+			ackPayload, _ := json.Marshal(map[string]interface{}{
+				"command_id": cmd.CommandID,
+				"device_id":  cmd.DeviceID,
+				"status":     "ACKNOWLEDGED",
+				"result":     result,
+			})
+			c.Publish(ackTopic, 1, false, ackPayload)
+			log.Printf("[COMMAND ACK] Published ACK to %s: %s", ackTopic, string(ackPayload))
+		}
+	})
+	log.Printf("Subscribed to downlink commands: %s\n", commandTopic)
+
 	// Channel for graceful termination
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

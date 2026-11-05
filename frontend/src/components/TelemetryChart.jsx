@@ -11,7 +11,8 @@ import {
   Filler,
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
-import { LineChart } from 'lucide-react';
+import { LineChart, Download, Layers } from 'lucide-react';
+import { exportTelemetry } from '../api';
 
 ChartJS.register(
   CategoryScale,
@@ -30,12 +31,27 @@ export default function TelemetryChart({
   tempUnit,
   limit,
   setLimit,
+  resolution = 'raw',
+  setResolution,
   isCompareMode = false,
   secondDeviceHistory = [],
   secondDeviceId = '',
 }) {
   const [showTemp, setShowTemp] = useState(true);
   const [showHum, setShowHum] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExport = async (format) => {
+    if (!deviceId) return;
+    setIsExporting(true);
+    try {
+      await exportTelemetry(deviceId, format);
+    } catch (e) {
+      alert(`Export failed: ${e.message}`);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const isDark = false;
 
@@ -304,6 +320,34 @@ export default function TelemetryChart({
             </button>
           </div>
 
+          {/* Continuous Aggregates Downsampling (TimescaleDB Rollups) */}
+          {setResolution && (
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60 font-mono" title="TimescaleDB Continuous Aggregate Rollup">
+              <span className="text-[10px] text-slate-400 px-1 font-sans font-bold flex items-center gap-1">
+                <Layers className="w-3 h-3 text-indigo-500" />
+                Rollup:
+              </span>
+              {[
+                { id: 'raw', label: 'Raw' },
+                { id: '1m', label: '1m' },
+                { id: '5m', label: '5m' },
+                { id: '1h', label: '1h' },
+              ].map((res) => (
+                <button
+                  key={res.id}
+                  onClick={() => setResolution(res.id)}
+                  className={`px-2 py-1 rounded transition text-xs ${
+                    resolution === res.id
+                      ? 'bg-indigo-600 text-white font-bold'
+                      : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                  }`}
+                >
+                  {res.label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Sample count limit */}
           <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60 font-mono">
             {[10, 20, 50, 100].map((num) => (
@@ -319,6 +363,28 @@ export default function TelemetryChart({
                 {num} pts
               </button>
             ))}
+          </div>
+
+          {/* Data Export (CSV / JSON) */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60">
+            <button
+              onClick={() => handleExport('csv')}
+              disabled={isExporting || historyData.length === 0}
+              className="px-2.5 py-1 rounded text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+              title="Export historical telemetry as CSV"
+            >
+              <Download className="w-3 h-3 text-emerald-600" />
+              <span>CSV</span>
+            </button>
+            <button
+              onClick={() => handleExport('json')}
+              disabled={isExporting || historyData.length === 0}
+              className="px-2.5 py-1 rounded text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition flex items-center gap-1 disabled:opacity-50 cursor-pointer"
+              title="Export historical telemetry as JSON"
+            >
+              <Download className="w-3 h-3 text-cyan-600" />
+              <span>JSON</span>
+            </button>
           </div>
         </div>
       </div>

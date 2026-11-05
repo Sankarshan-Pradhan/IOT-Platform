@@ -3,8 +3,10 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -548,5 +550,305 @@ func TestUserRegistrationAndUserScopedWorkspaces(t *testing.T) {
 
 	if unauthUsersRec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 Forbidden for regular user on /api/v1/users, got %d", unauthUsersRec.Code)
+	}
+
+	// 7. Regular user cannot DELETE user
+	unauthDelReq := httptest.NewRequest("DELETE", "/api/v1/users/"+regRes.User.ID, nil)
+	unauthDelReq.SetPathValue("id", regRes.User.ID)
+	unauthDelReq.Header.Set("Authorization", "Bearer "+userToken)
+	unauthDelRec := httptest.NewRecorder()
+	api.AuthMiddleware(api.DeleteUser)(unauthDelRec, unauthDelReq)
+	if unauthDelRec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for regular user deleting account, got %d", unauthDelRec.Code)
+	}
+
+	// 8. Admin cannot delete primary admin
+	adminDelSelfReq := httptest.NewRequest("DELETE", "/api/v1/users/usr-admin-system-001", nil)
+	adminDelSelfReq.SetPathValue("id", "usr-admin-system-001")
+	adminDelSelfReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminDelSelfRec := httptest.NewRecorder()
+	api.AuthMiddleware(api.DeleteUser)(adminDelSelfRec, adminDelSelfReq)
+	if adminDelSelfRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request deleting admin account, got %d", adminDelSelfRec.Code)
+	}
+
+	// 9. Admin successfully deletes user alex_wright
+	adminDelReq := httptest.NewRequest("DELETE", "/api/v1/users/"+regRes.User.ID, nil)
+	adminDelReq.SetPathValue("id", regRes.User.ID)
+	adminDelReq.Header.Set("Authorization", "Bearer "+adminToken)
+	adminDelRec := httptest.NewRecorder()
+	api.AuthMiddleware(api.DeleteUser)(adminDelRec, adminDelReq)
+	if adminDelRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK deleting alex_wright, got %d: %s", adminDelRec.Code, adminDelRec.Body.String())
+	}
+
+	// 10. Verify alex_wright is gone from user directory
+	usersReq2 := httptest.NewRequest("GET", "/api/v1/users", nil)
+	usersReq2.Header.Set("Authorization", "Bearer "+adminToken)
+	usersRec2 := httptest.NewRecorder()
+	api.GetUsers(usersRec2, usersReq2)
+
+	var usersRes2 map[string]interface{}
+	_ = json.Unmarshal(usersRec2.Body.Bytes(), &usersRes2)
+	users2 := usersRes2["users"].([]interface{})
+	for _, uItem := range users2 {
+		uMap := uItem.(map[string]interface{})
+		if uMap["id"] == regRes.User.ID {
+			t.Fatalf("expected user %s to be deleted, but still found in list", regRes.User.ID)
+		}
+	}
+}
+
+type mockPublisher struct {
+	lastTopic   string
+	lastPayload []byte
+}
+
+func (m *mockPublisher) PublishCommand(deviceID string, payload []byte) error {
+	m.lastTopic = "devices/" + deviceID + "/commands"
+	m.lastPayload = payload
+	return nil
+}
+
+func TestDownlinkDeviceCommands(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	pub := &mockPublisher{}
+	api.SetMQTTPublisher(pub)
+
+	// Ingest a device first
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", "test-node-downlink", time.Now().UTC(), []byte(`{"temperature_c": 22.5}`))
+
+	// 1. Dispatch SendCommand (set_relay)
+	cmdBody := []byte(`{"action":"set_relay","payload":{"relay_id":1,"state":true}}`)
+	req := httptest.NewRequest("POST", "/api/v1/devices/test-node-downlink/commands", bytes.NewBuffer(cmdBody))
+	req.SetPathValue("id", "test-node-downlink")
+	rec := httptest.NewRecorder()
+
+	api.SendCommand(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202 Accepted, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	cmdMap, ok := res["command"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected command in response")
+	}
+	cmdID := cmdMap["id"].(string)
+
+	if pub.lastTopic != "devices/test-node-downlink/commands" {
+		t.Fatalf("expected MQTT topic 'devices/test-node-downlink/commands', got '%s'", pub.lastTopic)
+	}
+
+	// 2. Fetch commands for device
+	getReq := httptest.NewRequest("GET", "/api/v1/devices/test-node-downlink/commands", nil)
+	getReq.SetPathValue("id", "test-node-downlink")
+	getRec := httptest.NewRecorder()
+	api.GetDeviceCommands(getRec, getReq)
+
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected status 200 OK, got %d", getRec.Code)
+	}
+
+	// 3. Process Command Acknowledgment from device
+	ackPayload := []byte(fmt.Sprintf(`{"command_id":"%s","device_id":"test-node-downlink","status":"ACKNOWLEDGED","result":"Relay 1 energized"}`, cmdID))
+	err := api.ProcessCommandAck("test-node-downlink", ackPayload)
+	if err != nil {
+		t.Fatalf("failed to process command ack: %v", err)
+	}
+
+	// 4. Verify command status is updated to ACKNOWLEDGED
+	getReq2 := httptest.NewRequest("GET", "/api/v1/devices/test-node-downlink/commands", nil)
+	getReq2.SetPathValue("id", "test-node-downlink")
+	getRec2 := httptest.NewRecorder()
+	api.GetDeviceCommands(getRec2, getReq2)
+
+	var getRes2 map[string]interface{}
+	_ = json.Unmarshal(getRec2.Body.Bytes(), &getRes2)
+	cmds := getRes2["commands"].([]interface{})
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cmds))
+	}
+	c0 := cmds[0].(map[string]interface{})
+	if c0["status"] != "ACKNOWLEDGED" {
+		t.Fatalf("expected status ACKNOWLEDGED, got %v", c0["status"])
+	}
+	if c0["response"] != "Relay 1 energized" {
+		t.Fatalf("expected response 'Relay 1 energized', got %v", c0["response"])
+	}
+}
+
+func TestNotificationChannels(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+
+	// 1. Create notification channel
+	chPayload := []byte(`{"name":"Discord Ops Room","type":"discord","target_url":"https://discord.com/api/webhooks/test","severity":"CRITICAL"}`)
+	req := httptest.NewRequest("POST", "/api/v1/notifications/channels", bytes.NewBuffer(chPayload))
+	rec := httptest.NewRecorder()
+	api.CreateNotificationChannel(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	chMap := res["channel"].(map[string]interface{})
+	chID := chMap["id"].(string)
+
+	// 2. List notification channels
+	listReq := httptest.NewRequest("GET", "/api/v1/notifications/channels", nil)
+	listRec := httptest.NewRecorder()
+	api.GetNotificationChannels(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", listRec.Code)
+	}
+
+	// 3. Delete channel
+	delReq := httptest.NewRequest("DELETE", "/api/v1/notifications/channels/"+chID, nil)
+	delReq.SetPathValue("id", chID)
+	delRec := httptest.NewRecorder()
+	api.DeleteNotificationChannel(delRec, delReq)
+
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", delRec.Code)
+	}
+}
+
+func TestContinuousAggregatesAndDownsampling(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	devID := "node-rollup-test"
+	baseTime := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+
+	// Ingest 6 data points across 3 minutes
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime, []byte(`{"temperature_c": 20.0, "humidity_pct": 50.0, "wifi_rssi": -65}`))
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime.Add(30*time.Second), []byte(`{"temperature_c": 24.0, "humidity_pct": 54.0, "wifi_rssi": -63}`))
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime.Add(65*time.Second), []byte(`{"temperature_c": 30.0, "humidity_pct": 60.0, "wifi_rssi": -70}`))
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime.Add(90*time.Second), []byte(`{"temperature_c": 32.0, "humidity_pct": 62.0, "wifi_rssi": -72}`))
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime.Add(125*time.Second), []byte(`{"temperature_c": 40.0, "humidity_pct": 70.0, "wifi_rssi": -60}`))
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, baseTime.Add(150*time.Second), []byte(`{"temperature_c": 42.0, "humidity_pct": 72.0, "wifi_rssi": -58}`))
+
+	// 1. Query raw telemetry
+	rawReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/history?resolution=raw", nil)
+	rawReq.SetPathValue("id", devID)
+	rawRec := httptest.NewRecorder()
+	api.GetTelemetryHistory(rawRec, rawReq)
+	if rawRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on raw telemetry, got %d", rawRec.Code)
+	}
+	var rawRes map[string]interface{}
+	_ = json.Unmarshal(rawRec.Body.Bytes(), &rawRes)
+	if rawRes["count"].(float64) != 6 {
+		t.Fatalf("expected 6 raw records, got %v", rawRes["count"])
+	}
+
+	// 2. Query 1-minute downsampled continuous aggregate
+	downReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/history?resolution=1m", nil)
+	downReq.SetPathValue("id", devID)
+	downRec := httptest.NewRecorder()
+	api.GetTelemetryHistory(downRec, downReq)
+	if downRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on 1m downsampled telemetry, got %d", downRec.Code)
+	}
+	var downRes map[string]interface{}
+	_ = json.Unmarshal(downRec.Body.Bytes(), &downRes)
+	// 3 buckets (minute 0, 1, 2)
+	if downRes["count"].(float64) != 3 {
+		t.Fatalf("expected 3 rollup buckets for 1m, got %v", downRes["count"])
+	}
+	history := downRes["history"].([]interface{})
+	firstBucket := history[0].(map[string]interface{})
+	pMap := firstBucket["payload"].(map[string]interface{})
+	if pMap["temperature_c"].(float64) != 22.0 {
+		t.Fatalf("expected avg temp 22.0 in first bucket, got %v", pMap["temperature_c"])
+	}
+	if pMap["temperature_c_min"].(float64) != 20.0 || pMap["temperature_c_max"].(float64) != 24.0 {
+		t.Fatalf("expected min=20.0, max=24.0 in first bucket, got min=%v, max=%v", pMap["temperature_c_min"], pMap["temperature_c_max"])
+	}
+}
+
+func TestTelemetryExport(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	devID := "node-export-test"
+	now := time.Now().UTC()
+
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, now, []byte(`{"temperature_c": 25.5, "humidity_pct": 55.0, "wifi_rssi": -65}`))
+
+	// 1. Export as CSV
+	csvReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/export?format=csv", nil)
+	csvReq.SetPathValue("id", devID)
+	csvRec := httptest.NewRecorder()
+	api.ExportTelemetry(csvRec, csvReq)
+
+	if csvRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on CSV export, got %d", csvRec.Code)
+	}
+	if !strings.Contains(csvRec.Header().Get("Content-Type"), "text/csv") {
+		t.Fatalf("expected text/csv Content-Type, got %s", csvRec.Header().Get("Content-Type"))
+	}
+	csvBody := csvRec.Body.String()
+	if !strings.Contains(csvBody, "timestamp_iso8601,tenant_id,device_id") || !strings.Contains(csvBody, "25.50") {
+		t.Fatalf("expected CSV content with header and data, got:\n%s", csvBody)
+	}
+
+	// 2. Export as JSON
+	jsonReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/export?format=json", nil)
+	jsonReq.SetPathValue("id", devID)
+	jsonRec := httptest.NewRecorder()
+	api.ExportTelemetry(jsonRec, jsonReq)
+
+	if jsonRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on JSON export, got %d", jsonRec.Code)
+	}
+	if !strings.Contains(jsonRec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("expected application/json Content-Type, got %s", jsonRec.Header().Get("Content-Type"))
+	}
+}
+
+func TestDeviceProvisioningAndOTA(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	pub := &mockPublisher{}
+	api.SetMQTTPublisher(pub)
+	devID := "node-ota-test"
+	now := time.Now().UTC()
+
+	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", devID, now, []byte(`{"temperature_c": 21.0}`))
+
+	// 1. Regenerate Device Auth Token
+	tokReq := httptest.NewRequest("POST", "/api/v1/devices/"+devID+"/token", nil)
+	tokReq.SetPathValue("id", devID)
+	tokRec := httptest.NewRecorder()
+	api.RegenerateDeviceToken(tokRec, tokReq)
+
+	if tokRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on RegenerateDeviceToken, got %d", tokRec.Code)
+	}
+	var tokRes map[string]interface{}
+	_ = json.Unmarshal(tokRec.Body.Bytes(), &tokRes)
+	tokenStr, ok := tokRes["auth_token"].(string)
+	if !ok || !strings.HasPrefix(tokenStr, "tok_node-ota-test_") {
+		t.Fatalf("expected generated token with prefix, got %v", tokRes["auth_token"])
+	}
+
+	// 2. Trigger Device OTA
+	otaPayload := []byte(`{"version":"v1.2.0","filename":"esp32_firmware_v1.2.0.bin"}`)
+	otaReq := httptest.NewRequest("POST", "/api/v1/devices/"+devID+"/ota", bytes.NewBuffer(otaPayload))
+	otaReq.SetPathValue("id", devID)
+	otaRec := httptest.NewRecorder()
+	api.TriggerDeviceOTA(otaRec, otaReq)
+
+	if otaRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on TriggerDeviceOTA, got %d: %s", otaRec.Code, otaRec.Body.String())
+	}
+	if pub.lastTopic != "devices/node-ota-test/commands" {
+		t.Fatalf("expected MQTT publish to devices/node-ota-test/commands, got %s", pub.lastTopic)
+	}
+	if !strings.Contains(string(pub.lastPayload), "ota_update") || !strings.Contains(string(pub.lastPayload), "v1.2.0") {
+		t.Fatalf("expected payload to contain ota_update and v1.2.0, got %s", string(pub.lastPayload))
 	}
 }

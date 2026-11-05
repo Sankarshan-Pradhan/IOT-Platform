@@ -58,7 +58,7 @@ export default function TenantsView({
     : tenants.filter((t) => t.owner_id === selectedUserFilter || t.owner_name === selectedUserFilter);
 
   return (
-    <div className="space-y-6 animate-fadeIn">
+    <div className="space-y-6">
       
       {/* Header & Title */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
@@ -212,10 +212,10 @@ export default function TenantsView({
               return (
                 <div
                   key={t.id}
-                  className={`rounded-2xl p-5 border transition-all text-left flex flex-col justify-between shadow-sm relative overflow-hidden ${
+                  className={`rounded-2xl p-5 border transition-colors text-left flex flex-col justify-between shadow-xs relative overflow-hidden ${
                     isSelected
-                      ? 'bg-white border-emerald-500 shadow-md ring-1 ring-emerald-500/40'
-                      : 'bg-white/80 hover:bg-white border-slate-200 hover:border-slate-300'
+                      ? 'bg-white border-emerald-500 ring-1 ring-emerald-500/40'
+                      : 'bg-white hover:bg-slate-50/50 border-slate-200 hover:border-slate-300'
                   }`}
                 >
                   {isSelected && (

@@ -25,7 +25,10 @@ type mockProcessor struct {
 	lastDeviceID      string
 	lastTelemetryTime time.Time
 	lastPayload       []byte
+	lastAckDeviceID   string
+	lastAckPayload    []byte
 	callCount         int
+	ackCount          int
 }
 
 func (m *mockProcessor) ProcessTelemetry(tenantID, channelID, deviceID string, telemetryTime time.Time, payloadData []byte) error {
@@ -35,6 +38,13 @@ func (m *mockProcessor) ProcessTelemetry(tenantID, channelID, deviceID string, t
 	m.lastTelemetryTime = telemetryTime
 	m.lastPayload = payloadData
 	m.callCount++
+	return nil
+}
+
+func (m *mockProcessor) ProcessCommandAck(deviceID string, payloadData []byte) error {
+	m.lastAckDeviceID = deviceID
+	m.lastAckPayload = payloadData
+	m.ackCount++
 	return nil
 }
 
@@ -143,5 +153,26 @@ func TestMQTTMessageParsing_WrappedPayload(t *testing.T) {
 
 	if extracted["temperature_c"].(float64) != 26.5 {
 		t.Errorf("expected temperature 26.5, got %v", extracted["temperature_c"])
+	}
+}
+
+func TestMQTTCommandAck(t *testing.T) {
+	proc := &mockProcessor{}
+	svc := &MQTTService{processor: proc}
+
+	rawAck := []byte(`{"command_id":"cmd-101","status":"ACKNOWLEDGED","result":"Relay energized"}`)
+	msg := &mockMQTTMessage{
+		topic:   "devices/esp32-dht22-node1/command_ack",
+		payload: rawAck,
+	}
+
+	svc.handleMessage(nil, msg)
+
+	if proc.ackCount != 1 {
+		t.Fatalf("expected 1 call to ProcessCommandAck, got %d", proc.ackCount)
+	}
+
+	if proc.lastAckDeviceID != "esp32-dht22-node1" {
+		t.Errorf("expected device ID 'esp32-dht22-node1', got '%s'", proc.lastAckDeviceID)
 	}
 }

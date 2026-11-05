@@ -9,10 +9,11 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 )
 
-// IngestionProcessor interface allows MQTT service to ingest data into
-// either memory cache or TimescaleDB without coupling to the database.
+// IngestionProcessor interface allows MQTT service to ingest data and command acknowledgments
+// into either memory cache or TimescaleDB without coupling to the database.
 type IngestionProcessor interface {
 	ProcessTelemetry(tenantID, channelID, deviceID string, telemetryTime time.Time, payloadData []byte) error
+	ProcessCommandAck(deviceID string, payloadData []byte) error
 }
 
 type MQTTService struct {
@@ -58,6 +59,17 @@ func (s *MQTTService) Stop() {
 	}
 }
 
+// PublishCommand sends a downlink command to the specific device on devices/{id}/commands
+func (s *MQTTService) PublishCommand(deviceID string, cmdPayload []byte) error {
+	if s.client == nil || !s.client.IsConnected() {
+		return nil // Non-fatal if broker is not connected in resilient standalone mode
+	}
+	topic := "devices/" + deviceID + "/commands"
+	token := s.client.Publish(topic, 1, false, cmdPayload)
+	token.Wait()
+	return token.Error()
+}
+
 func (s *MQTTService) subscribe() {
 	topics := map[string]byte{
 		"devices/+/telemetry":                           1,
@@ -65,6 +77,8 @@ func (s *MQTTService) subscribe() {
 		"channels/+/telemetry":                          1,
 		"tenants/+/channels/+/devices/+/telemetry":      1,
 		"iot/telemetry":                                 1,
+		"devices/+/command_ack":                         1,
+		"tenants/+/devices/+/command_ack":               1,
 	}
 
 	for topic, qos := range topics {
@@ -79,6 +93,22 @@ func (s *MQTTService) subscribe() {
 func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 	topic := msg.Topic()
 	payload := msg.Payload()
+
+	// Handle command acknowledgments from hardware devices
+	if strings.HasSuffix(topic, "/command_ack") {
+		parts := strings.Split(topic, "/")
+		var devID string
+		if len(parts) >= 2 && parts[0] == "devices" {
+			devID = parts[1]
+		} else if len(parts) >= 4 && parts[0] == "tenants" {
+			devID = parts[3]
+		}
+		if s.processor != nil {
+			_ = s.processor.ProcessCommandAck(devID, payload)
+		}
+		log.Printf("[MQTT] Ingested command acknowledgment from device: %s", devID)
+		return
+	}
 
 	var tenantID string
 	var channelID string

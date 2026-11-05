@@ -126,6 +126,44 @@ The left navigation sidebar presents a clean, logical management flow matching e
 
 ---
 
+### 12. Downlink Device Control & Actuation Panel
+Integrated in [`DeviceControlPanel.jsx`](src/components/DeviceControlPanel.jsx):
+- **AC/DC Relay Control**: Live toggle button switching hardware relays (`set_relay`).
+- **Status LED Beacon**: Visual hardware beacon toggle (`toggle_led`).
+- **Dynamic Sampling Rate**: Selectable sampling rate buttons (1s, 2s, 5s, 10s) updating ESP32 transmission interval (`set_interval`).
+- **Remote Hardware Reboot**: Modal with confirmation prompt sending remote restart command (`reboot`).
+- **Audit Table**: Live table displaying the recent 10 dispatched commands with real-time status pills (`PENDING` vs `ACKNOWLEDGED`) and hardware responses.
+
+---
+
+### 13. TimescaleDB Continuous Aggregates & Data Export
+Integrated in [`TelemetryChart.jsx`](src/components/TelemetryChart.jsx):
+- **Continuous Aggregate Rollups**: Selector pills for `Raw`, `1m`, `5m`, and `1h` buckets, allowing operators to downsample high-density telemetry instantly.
+- **Direct Data Export**: Quick-download buttons for **CSV** and **JSON** streaming historical datasets with proper `Content-Disposition` download headers.
+
+---
+
+### 14. Outbound Alert Notification Channels
+Integrated in [`GuardrailsModal.jsx`](src/components/GuardrailsModal.jsx):
+- **Alert Channels Tab**: Configure outbound webhooks for **Discord**, **Slack**, and custom **HTTP POST Webhooks**.
+- **Automated Dispatch**: Triggers external webhook notifications whenever a `CRITICAL` guardrail threshold alarm fires.
+- **Test Ping**: Dedicated "Test Ping" button on each channel card verifying webhook reachability in real-time.
+
+---
+
+### 15. Zero-Latency Real-Time Streaming (SSE)
+- Header displays an animated `Live SSE (0ms)` status badge when connected to the backend EventSource (`GET /api/v1/telemetry/stream`).
+- Telemetry gauges, historical charts, and alarm badges update with 0ms delay upon packet ingestion, eliminating polling latency.
+- Automatic fallback to standard 5s polling if SSE disconnected.
+
+---
+
+### 16. Production Multi-Stage Containerization (Nginx)
+- **Dockerfile:** [`frontend/Dockerfile`](Dockerfile) builds production assets in Node 20 and serves them using lightweight `nginx:alpine`.
+- **Nginx Reverse Proxy:** [`frontend/nginx.conf`](nginx.conf) proxies `/api/` calls to the Go backend and configures zero-buffering (`proxy_buffering off;`) for Server-Sent Events.
+
+---
+
 ## 📁 Project Directory Layout
 
 ```
@@ -139,7 +177,8 @@ frontend/
 │   │   ├── Header.jsx             # Health status badge, countdown timer, unit, guardrail alarm badge & user profile / sign out
 │   │   ├── DeviceSelector.jsx     # Device switcher with delete actions & empty states
 │   │   ├── MetricCard.jsx         # Temperature, Humidity, and RSSI health cards
-│   │   ├── TelemetryChart.jsx     # Dual Y-axis historical line chart
+│   │   ├── DeviceControlPanel.jsx # Two-way relay control, LED, reboot, token & OTA
+│   │   ├── TelemetryChart.jsx     # Dual Y-axis historical line chart with downsampling & export
 │   │   ├── RecentTable.jsx        # Live tabular packet viewer
 │   │   ├── TenantsView.jsx        # Multi-tenant workspaces with admin directory & delete support
 │   │   ├── ChannelsView.jsx       # Channels & MQTT topic routing with delete support

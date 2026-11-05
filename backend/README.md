@@ -509,6 +509,7 @@ Queries time-series telemetry records from the TimescaleDB hypertable.
 | :--- | :--- | :--- | :--- |
 | `limit` | `int` | `100` | Max records to return (1–1000) |
 | `order` | `string` | `DESC` | Sort order: `ASC` (chronological rolling window of latest N points for charts) or `DESC` (most recent first) |
+| `resolution` | `string` | `raw` | TimescaleDB Continuous Aggregate rollup: `raw`, `1m` (1-min buckets), `5m` (5-min buckets), or `1h` (1-hour buckets) |
 | `start` / `from` | `RFC3339` | None | Start time boundary (e.g. `2026-10-16T10:00:00Z`) |
 | `end` / `to` | `RFC3339` | None | End time boundary |
 
@@ -566,6 +567,108 @@ Allows posting sensor data via HTTP REST as an alternative to MQTT (useful for w
 
 ---
 
+### 11. Zero-Latency Real-Time Streaming (SSE)
+
+#### `GET /api/v1/telemetry/stream`
+Establishes an HTTP Server-Sent Events (SSE) connection streaming real-time events directly to UI clients with zero polling latency.
+
+* **Headers:** `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`.
+* **Heartbeat:** Automated 15-second ping (`:keepalive\n\n`) preventing proxy timeouts.
+* **Events Broadcasted:**
+  * `event: telemetry` — Fired immediately upon ingestion of any sensor packet.
+  * `event: alarm` — Fired when a guardrail rule triggers or resolves.
+  * `event: command_ack` — Fired when an edge node acknowledges a downlink command.
+
+---
+
+### 12. Downlink Device Control & Actuation
+
+#### `POST /api/v1/devices/{id}/commands` *(Protected)*
+Dispatches a downlink command to an edge microcontroller via MQTT topic `devices/{id}/commands`.
+
+**Request Body:**
+```json
+{
+  "action": "set_relay",
+  "payload": {
+    "relay_id": 1,
+    "state": true
+  }
+}
+```
+
+*Supported Actions:*
+- `set_relay`: `{"relay_id": 1, "state": true|false}`
+- `toggle_led`: `{"state": true|false}`
+- `set_interval`: `{"interval_ms": 1000 - 60000}`
+- `reboot`: `{}`
+
+#### `GET /api/v1/devices/{id}/commands` *(Protected)*
+Returns the recent audit log of dispatched downlink commands and their acknowledgment statuses (`PENDING`, `ACKNOWLEDGED`, `FAILED`).
+
+#### `POST /api/v1/devices/{id}/command_ack`
+HTTP acknowledgment callback endpoint for simulated nodes or HTTP-only devices.
+
+---
+
+### 13. Outbound Alarm Notification Channels
+
+#### `GET /api/v1/notifications/channels` *(Protected)*
+Lists all registered outbound alert dispatch channels.
+
+#### `POST /api/v1/notifications/channels` *(Protected)*
+Registers a new notification channel for automated alerting when `CRITICAL` alarms fire.
+
+**Request Body:**
+```json
+{
+  "name": "Ops Incident Discord",
+  "type": "discord",
+  "target_url": "https://discord.com/api/webhooks/...",
+  "severity": "CRITICAL"
+}
+```
+*Supported Types:* `discord`, `slack`, `webhook`.
+
+#### `DELETE /api/v1/notifications/channels/{id}` *(Protected)*
+Deletes an alert notification channel.
+
+#### `POST /api/v1/notifications/test` *(Protected)*
+Sends a test notification ping to verify webhook connectivity.
+
+---
+
+### 14. Historical Telemetry Export (CSV & JSON)
+
+#### `GET /api/v1/devices/{id}/telemetry/export`
+Streams historical telemetry directly as downloadable attachments for offline analytics or audit reports.
+
+**Query Parameters:**
+- `format`: `csv` (default) or `json`.
+- `limit`: Maximum rows to export (default 5000, max 50000).
+- `start` / `end`: Optional ISO-8601 time boundaries.
+
+**Headers Returned:**
+`Content-Disposition: attachment; filename="telemetry_<device_id>_<timestamp>.csv"`
+
+---
+
+### 15. Device Provisioning & Over-the-Air (OTA) Updates
+
+#### `POST /api/v1/devices/{id}/token` *(Protected)*
+Regenerates a cryptographically secure device authentication token (`tok_<device_id>_<hex>`).
+
+#### `POST /api/v1/ota/firmware` *(Protected)*
+Uploads a new compiled `.bin` firmware binary. Validates SHA-256 checksum and saves to disk.
+
+#### `GET /api/v1/ota/firmware/{filename}`
+Serves raw binary files (`application/octet-stream`) for direct ESP32 `httpUpdate.update()` flashing.
+
+#### `POST /api/v1/devices/{id}/ota` *(Protected)*
+Dispatches a downlink OTA firmware upgrade command to the target device.
+
+---
+
 ## 📡 MQTT Ingestion Pipeline
 
 ### Subscribed Topics
@@ -617,6 +720,17 @@ Or from the `backend/` folder:
 ```bash
 cd backend
 go run main.go
+```
+
+### Running with Docker
+
+Build and run using the multi-stage Docker container:
+```bash
+# Build from repository root
+docker build -f backend/Dockerfile -t iot-backend .
+
+# Run standalone
+docker run -p 8080:8080 iot-backend
 ```
 
 ### Testing Ingestion with the Node Simulator

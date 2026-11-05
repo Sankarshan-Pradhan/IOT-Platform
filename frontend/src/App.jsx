@@ -21,8 +21,12 @@ export default function App() {
     }
   });
 
+  // When an admin selects a user to inspect, view that user's dashboard directly
+  const [impersonatedUser, setImpersonatedUser] = useState(null);
+
   const handleLoginSuccess = (user) => {
     setCurrentUser(user);
+    setImpersonatedUser(null);
     sessionStorage.setItem('iot_user', JSON.stringify(user));
   };
 
@@ -33,6 +37,7 @@ export default function App() {
     localStorage.removeItem('iot_user');
     localStorage.removeItem('iot_jwt_token');
     setCurrentUser(null);
+    setImpersonatedUser(null);
   };
 
   // 1. If not authenticated -> ALWAYS show Login / Registration Page first
@@ -40,11 +45,29 @@ export default function App() {
     return <AuthScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
-  // 2. If Admin -> Route to dedicated Admin Page
-  if (currentUser.role === 'admin') {
-    return <AdminDashboard currentUser={currentUser} onLogout={handleLogout} />;
+  // 2. If Admin is viewing a specific user -> Route directly to that user's dashboard with return capability
+  if (currentUser.role === 'admin' && impersonatedUser) {
+    return (
+      <UserDashboard
+        currentUser={impersonatedUser}
+        onLogout={handleLogout}
+        adminUser={currentUser}
+        onBackToAdmin={() => setImpersonatedUser(null)}
+      />
+    );
   }
 
-  // 3. If Regular User -> Route to dedicated User Page
+  // 3. If Admin -> Route to dedicated Admin Page
+  if (currentUser.role === 'admin') {
+    return (
+      <AdminDashboard
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        onForwardToUser={(user) => setImpersonatedUser(user)}
+      />
+    );
+  }
+
+  // 4. If Regular User -> Route to dedicated User Page
   return <UserDashboard currentUser={currentUser} onLogout={handleLogout} />;
 }

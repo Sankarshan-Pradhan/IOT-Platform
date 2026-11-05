@@ -33,16 +33,30 @@ type Channel struct {
 
 // Device represents an IoT device in the registry
 type Device struct {
-	ID         string          `json:"id"`
-	TenantID   string          `json:"tenant_id"`
-	ChannelID  string          `json:"channel_id,omitempty"`
-	DeviceID   string          `json:"device_id"`
-	Name       string          `json:"name"`
-	DeviceType string          `json:"device_type"`
-	Status     string          `json:"status"`
-	Metadata   json.RawMessage `json:"metadata"`
-	CreatedAt  time.Time       `json:"created_at"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID              string          `json:"id"`
+	TenantID        string          `json:"tenant_id"`
+	ChannelID       string          `json:"channel_id,omitempty"`
+	DeviceID        string          `json:"device_id"`
+	Name            string          `json:"name"`
+	DeviceType      string          `json:"device_type"`
+	Status          string          `json:"status"`
+	AuthToken       string          `json:"auth_token,omitempty"`
+	FirmwareVersion string          `json:"firmware_version,omitempty"`
+	Metadata        json.RawMessage `json:"metadata"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+// Firmware represents an OTA firmware binary package for remote flashing
+type Firmware struct {
+	ID          string    `json:"id"`
+	Version     string    `json:"version"`
+	DeviceType  string    `json:"device_type"`
+	Filename    string    `json:"filename"`
+	SizeBytes   int64     `json:"size_bytes"`
+	ChecksumSHA string    `json:"checksum_sha"`
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // TelemetryRecord represents a time-series telemetry row
@@ -152,4 +166,17 @@ type JWTClaims struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	Exp      int64  `json:"exp"`
 	Iat      int64  `json:"iat"`
+}
+
+// DeviceCommand represents a downlink actuation command dispatched to a hardware device
+type DeviceCommand struct {
+	ID        string          `json:"id"`
+	DeviceID  string          `json:"device_id"`
+	TenantID  string          `json:"tenant_id,omitempty"`
+	Action    string          `json:"action"` // e.g., "set_relay", "toggle_led", "set_interval", "reboot", "calibrate"
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	Status    string          `json:"status"` // "PENDING", "SENT", "ACKNOWLEDGED", "FAILED"
+	Response  string          `json:"response,omitempty"`
+	SentAt    time.Time       `json:"sent_at"`
+	AckAt     *time.Time      `json:"ack_at,omitempty"`
 }

@@ -8,6 +8,8 @@ import {
   Layers,
   ChevronRight,
   ShieldCheck,
+  ShieldAlert,
+  ArrowLeft,
 } from 'lucide-react';
 
 export default function Sidebar({
@@ -21,10 +23,28 @@ export default function Sidebar({
   onOpenAddTenant,
   onOpenAddDevice,
   isAdmin = false,
+  openAlarmsCount = 0,
+  onOpenGuardrailsModal,
+  onBackToAdmin,
 }) {
   return (
     <aside className="w-64 sm:w-72 bg-white dark:bg-slate-900/95 border-r border-slate-200 dark:border-slate-800 flex flex-col h-screen sticky top-0 z-40 select-none transition-colors duration-200">
       
+      {/* Admin Forwarded Navigation Banner in Sidebar */}
+      {onBackToAdmin && (
+        <div className="p-3 bg-amber-50 border-b border-amber-200">
+          <button
+            type="button"
+            onClick={onBackToAdmin}
+            className="w-full py-2 px-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 transition shadow-xs cursor-pointer"
+            title="Return to Admin Console"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 text-slate-950" />
+            <span>← Return to Admin Console</span>
+          </button>
+        </div>
+      )}
+
       {/* 1. Workspace / Tenant Header Card */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-transparent">
         <div className="flex items-center justify-between mb-2">
@@ -76,9 +96,9 @@ export default function Sidebar({
         {/* Navigation Card 1: Workspaces / Multi-Tenancy (Top) */}
         <div
           onClick={() => setActiveTab('tenants')}
-          className={`group rounded-xl p-3 border transition-all cursor-pointer relative overflow-hidden ${
+          className={`group rounded-xl p-3 border transition-colors cursor-pointer relative overflow-hidden ${
             activeTab === 'tenants'
-              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-sm dark:shadow-lg dark:shadow-emerald-500/10 ring-1 ring-emerald-500/30'
+              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-xs ring-1 ring-emerald-500/30'
               : 'bg-slate-50/70 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-800/50 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
@@ -108,9 +128,9 @@ export default function Sidebar({
         {/* Navigation Card 2: Live Dashboard */}
         <div
           onClick={() => setActiveTab('dashboard')}
-          className={`group rounded-xl p-3 border transition-all cursor-pointer relative overflow-hidden ${
+          className={`group rounded-xl p-3 border transition-colors cursor-pointer relative overflow-hidden ${
             activeTab === 'dashboard'
-              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-sm dark:shadow-lg dark:shadow-emerald-500/10 ring-1 ring-emerald-500/30'
+              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-xs ring-1 ring-emerald-500/30'
               : 'bg-slate-50/70 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-800/50 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
@@ -140,9 +160,9 @@ export default function Sidebar({
         {/* Navigation Card 3: Clients & Edge Devices */}
         <div
           onClick={() => setActiveTab('devices')}
-          className={`group rounded-xl p-3 border transition-all cursor-pointer relative overflow-hidden ${
+          className={`group rounded-xl p-3 border transition-colors cursor-pointer relative overflow-hidden ${
             activeTab === 'devices'
-              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-sm dark:shadow-lg dark:shadow-emerald-500/10 ring-1 ring-emerald-500/30'
+              ? 'bg-emerald-50/70 dark:bg-slate-800/90 border-emerald-500/60 shadow-xs ring-1 ring-emerald-500/30'
               : 'bg-slate-50/70 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-800/50 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
@@ -172,9 +192,9 @@ export default function Sidebar({
         {/* Navigation Card 4: Groups & Channels */}
         <div
           onClick={() => setActiveTab('channels')}
-          className={`group rounded-xl p-3 border transition-all cursor-pointer relative overflow-hidden ${
+          className={`group rounded-xl p-3 border transition-colors cursor-pointer relative overflow-hidden ${
             activeTab === 'channels'
-              ? 'bg-cyan-50/70 dark:bg-slate-800/90 border-cyan-500/60 shadow-sm dark:shadow-lg dark:shadow-cyan-500/10 ring-1 ring-cyan-500/30'
+              ? 'bg-cyan-50/70 dark:bg-slate-800/90 border-cyan-500/60 shadow-xs ring-1 ring-cyan-500/30'
               : 'bg-slate-50/70 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-800/50 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700'
           }`}
         >
@@ -198,6 +218,31 @@ export default function Sidebar({
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium">
               {channels.length}
             </span>
+          </div>
+        </div>
+
+        {/* Navigation Card 5: Safety Guardrails (Operator Rules & Alarms) */}
+        <div
+          onClick={onOpenGuardrailsModal}
+          className="group rounded-xl p-3 border transition-colors cursor-pointer relative overflow-hidden bg-slate-50/70 hover:bg-slate-100 dark:bg-slate-950/40 dark:hover:bg-slate-800/50 border-slate-200 dark:border-slate-800/80 hover:border-slate-300 dark:hover:border-slate-700 shadow-xs"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400">
+                <ShieldAlert className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">Safety Guardrails</h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">Rules & threshold alarms</p>
+              </div>
+            </div>
+            {openAlarmsCount > 0 ? (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500 text-white shadow-xs">
+                {openAlarmsCount} OPEN
+              </span>
+            ) : (
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            )}
           </div>
         </div>
 

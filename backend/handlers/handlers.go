@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +23,11 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// MQTTPublisher allows decoupled publishing of downlink commands via MQTT
+type MQTTPublisher interface {
+	PublishCommand(deviceID string, cmdPayload []byte) error
+}
 
 type APIHandler struct {
 	DB            *sql.DB
@@ -37,6 +44,11 @@ type APIHandler struct {
 	memRules      map[string]models.Rule
 	memAlarms     map[string]models.Alarm
 	memUsers      map[string]models.User
+	memCommands   map[string]models.DeviceCommand
+	mqttPub       MQTTPublisher
+	sseBroker     *SSEBroker
+	memNotificationChannels map[string]NotificationChannel
+	memFirmwares  map[string]models.Firmware
 }
 
 func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
@@ -131,6 +143,10 @@ func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
 		memUsers: map[string]models.User{
 			"usr-admin-system-001": adminUserObj,
 		},
+		memCommands: make(map[string]models.DeviceCommand),
+		sseBroker:   NewSSEBroker(),
+		memNotificationChannels: make(map[string]NotificationChannel),
+		memFirmwares:            make(map[string]models.Firmware),
 	}
 
 	if db != nil {
@@ -138,6 +154,12 @@ func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
 	}
 
 	return h
+}
+
+func (h *APIHandler) SetMQTTPublisher(pub MQTTPublisher) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mqttPub = pub
 }
 
 func (h *APIHandler) ensureSchemaMigrations() {
@@ -159,9 +181,25 @@ func (h *APIHandler) ensureSchemaMigrations() {
 		CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 		CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+		CREATE TABLE IF NOT EXISTS device_commands (
+			id VARCHAR(64) PRIMARY KEY,
+			device_id VARCHAR(64) NOT NULL,
+			tenant_id VARCHAR(64),
+			action VARCHAR(64) NOT NULL,
+			payload JSONB,
+			status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+			response TEXT,
+			sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			ack_at TIMESTAMPTZ
+		);
+		CREATE INDEX IF NOT EXISTS idx_commands_device ON device_commands(device_id, sent_at DESC);
+
 		ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_id VARCHAR(64);
 		ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_name VARCHAR(128);
 		ALTER TABLE tenants ADD COLUMN IF NOT EXISTS owner_email VARCHAR(128);
+
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS auth_token VARCHAR(128);
+		ALTER TABLE devices ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(64) DEFAULT 'v1.0.0';
 	`)
 
 	adminHash, _ := bcrypt.GenerateFromPassword([]byte(h.AdminPassword), bcrypt.DefaultCost)
@@ -364,7 +402,7 @@ func (h *APIHandler) resolveDevice(identifier string) (*models.Device, error) {
 }
 
 // GetTenants handles GET /api/v1/tenants
-// Admin sees ALL workspaces across all users; regular users only see their own workspaces.
+// Admin sees ALL workspaces across all users (or filters by owner_id/user_id); regular users only see their own workspaces.
 func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 	caller := h.getCaller(r)
 	isAdmin := caller != nil && caller.Role == "admin"
@@ -375,12 +413,27 @@ func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 		callerUsername = caller.Username
 	}
 
+	filterOwner := strings.TrimSpace(r.URL.Query().Get("owner_id"))
+	if filterOwner == "" {
+		filterOwner = strings.TrimSpace(r.URL.Query().Get("user_id"))
+	}
+
 	if h.isDBReady() {
 		var query string
 		var rows *sql.Rows
 		var err error
 
-		if isAdmin || caller == nil {
+		if isAdmin && filterOwner != "" {
+			query = `
+				SELECT id, name, slug, COALESCE(description, ''), 
+				       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
+				       created_at, updated_at 
+				FROM tenants 
+				WHERE owner_id = $1 OR owner_id = $2 OR owner_name = $1 OR owner_email = $1
+				ORDER BY created_at ASC;
+			`
+			rows, err = h.DB.Query(query, filterOwner, filterOwner)
+		} else if isAdmin || caller == nil {
 			query = `
 				SELECT id, name, slug, COALESCE(description, ''), 
 				       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
@@ -423,7 +476,11 @@ func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.RUnlock()
 	tenants := make([]models.Tenant, 0)
 	for _, t := range h.memTenants {
-		if isAdmin || caller == nil {
+		if isAdmin && filterOwner != "" {
+			if t.OwnerID == filterOwner || t.OwnerName == filterOwner || t.OwnerEmail == filterOwner {
+				tenants = append(tenants, t)
+			}
+		} else if isAdmin || caller == nil {
 			tenants = append(tenants, t)
 		} else if t.OwnerID == callerID || t.OwnerID == callerUsername {
 			tenants = append(tenants, t)
@@ -469,12 +526,22 @@ func (h *APIHandler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if caller != nil {
-		t.OwnerID = caller.UserID
-		t.OwnerName = caller.Name
-		if t.OwnerName == "" {
-			t.OwnerName = caller.Username
+		if caller.Role == "admin" && t.OwnerID != "" {
+			// Keep specified OwnerID if administrator is creating on behalf of a user
+			if t.OwnerName == "" {
+				t.OwnerName = caller.Name
+			}
+			if t.OwnerEmail == "" {
+				t.OwnerEmail = caller.Email
+			}
+		} else {
+			t.OwnerID = caller.UserID
+			t.OwnerName = caller.Name
+			if t.OwnerName == "" {
+				t.OwnerName = caller.Username
+			}
+			t.OwnerEmail = caller.Email
 		}
-		t.OwnerEmail = caller.Email
 	} else {
 		t.OwnerID = "usr-admin-system-001"
 		t.OwnerName = "System Administrator"
@@ -729,7 +796,8 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 
 	if h.isDBReady() {
 		query := `
-			SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, metadata, created_at, updated_at
+			SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, 
+			       COALESCE(auth_token, ''), COALESCE(firmware_version, 'v1.0.0'), metadata, created_at, updated_at
 			FROM devices
 			WHERE ($1 = '' OR tenant_id::text = $1)
 			  AND ($2 = '' OR channel_id = $2)
@@ -746,6 +814,7 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 				var metadataBytes []byte
 				if err := rows.Scan(
 					&d.ID, &d.TenantID, &d.ChannelID, &d.DeviceID, &d.Name, &d.DeviceType, &d.Status,
+					&d.AuthToken, &d.FirmwareVersion,
 					&metadataBytes, &d.CreatedAt, &d.UpdatedAt,
 				); err == nil {
 					d.Metadata = json.RawMessage(metadataBytes)
@@ -759,7 +828,7 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Fallback query if channel_id column does not exist
+		// Fallback query if columns do not exist
 		fallbackQuery := `
 			SELECT id, tenant_id, device_id, name, device_type, status, metadata, created_at, updated_at
 			FROM devices
@@ -779,6 +848,7 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 					&metadataBytes, &d.CreatedAt, &d.UpdatedAt,
 				); err == nil {
 					d.Metadata = json.RawMessage(metadataBytes)
+					d.FirmwareVersion = "v1.0.0"
 					devices = append(devices, d)
 				}
 			}
@@ -859,6 +929,129 @@ func (h *APIHandler) GetLatestTelemetry(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func generateSecureToken(prefix string) string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("tok_%s_%x", prefix, b)
+}
+
+func downsampleRecords(records []models.TelemetryRecord, resolution string) []models.TelemetryRecord {
+	var bucketDuration time.Duration
+	switch resolution {
+	case "1m":
+		bucketDuration = time.Minute
+	case "5m":
+		bucketDuration = 5 * time.Minute
+	case "1h":
+		bucketDuration = time.Hour
+	default:
+		return records
+	}
+
+	type bucketAgg struct {
+		bucket   time.Time
+		tenantID string
+		deviceID string
+		tempSum  float64
+		tempMin  float64
+		tempMax  float64
+		hasTemp  bool
+		humSum   float64
+		humMin   float64
+		humMax   float64
+		hasHum   bool
+		rssiSum  float64
+		hasRssi  bool
+		count    int64
+	}
+
+	buckets := make(map[time.Time]*bucketAgg)
+	orderKeys := make([]time.Time, 0)
+
+	for _, r := range records {
+		bTime := r.Time.Truncate(bucketDuration)
+		bag, exists := buckets[bTime]
+		if !exists {
+			bag = &bucketAgg{
+				bucket:   bTime,
+				tenantID: r.TenantID,
+				deviceID: r.DeviceID,
+			}
+			buckets[bTime] = bag
+			orderKeys = append(orderKeys, bTime)
+		}
+
+		var m map[string]interface{}
+		if err := json.Unmarshal(r.Payload, &m); err == nil {
+			if v, ok := m["temperature_c"].(float64); ok {
+				if !bag.hasTemp {
+					bag.tempMin = v
+					bag.tempMax = v
+					bag.hasTemp = true
+				} else {
+					if v < bag.tempMin {
+						bag.tempMin = v
+					}
+					if v > bag.tempMax {
+						bag.tempMax = v
+					}
+				}
+				bag.tempSum += v
+			}
+			if v, ok := m["humidity_pct"].(float64); ok {
+				if !bag.hasHum {
+					bag.humMin = v
+					bag.humMax = v
+					bag.hasHum = true
+				} else {
+					if v < bag.humMin {
+						bag.humMin = v
+					}
+					if v > bag.humMax {
+						bag.humMax = v
+					}
+				}
+				bag.humSum += v
+			}
+			if v, ok := m["wifi_rssi"].(float64); ok {
+				bag.rssiSum += v
+				bag.hasRssi = true
+			}
+		}
+		bag.count++
+	}
+
+	result := make([]models.TelemetryRecord, 0, len(orderKeys))
+	for _, k := range orderKeys {
+		bag := buckets[k]
+		payload := map[string]interface{}{
+			"sample_count": bag.count,
+		}
+		if bag.hasTemp && bag.count > 0 {
+			payload["temperature_c"] = math.Round((bag.tempSum/float64(bag.count))*100) / 100
+			payload["temperature_c_min"] = bag.tempMin
+			payload["temperature_c_max"] = bag.tempMax
+		}
+		if bag.hasHum && bag.count > 0 {
+			payload["humidity_pct"] = math.Round((bag.humSum/float64(bag.count))*100) / 100
+			payload["humidity_pct_min"] = bag.humMin
+			payload["humidity_pct_max"] = bag.humMax
+		}
+		if bag.hasRssi && bag.count > 0 {
+			payload["wifi_rssi"] = math.Round((bag.rssiSum/float64(bag.count))*100) / 100
+		}
+		pBytes, _ := json.Marshal(payload)
+		result = append(result, models.TelemetryRecord{
+			Time:      bag.bucket,
+			TenantID:  bag.tenantID,
+			DeviceID:  bag.deviceID,
+			Payload:   pBytes,
+			CreatedAt: bag.bucket,
+		})
+	}
+	return result
+}
+
 // GetTelemetryHistory handles GET /api/v1/devices/{id}/telemetry/history
 func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -877,6 +1070,11 @@ func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request)
 				limit = parsed
 			}
 		}
+	}
+
+	resolution := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("resolution")))
+	if resolution != "1m" && resolution != "5m" && resolution != "1h" {
+		resolution = "raw"
 	}
 
 	if h.isDBReady() {
@@ -908,6 +1106,64 @@ func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request)
 				}
 			}
 
+			// Continuous Aggregate query when downsampled resolution requested
+			if resolution == "1m" || resolution == "5m" || resolution == "1h" {
+				viewName := "telemetry_" + resolution
+				aggQuery := fmt.Sprintf(`
+					SELECT bucket, tenant_id, device_id, 
+					       COALESCE(avg_temperature, 0), COALESCE(min_temperature, 0), COALESCE(max_temperature, 0),
+					       COALESCE(avg_humidity, 0), COALESCE(min_humidity, 0), COALESCE(max_humidity, 0),
+					       COALESCE(avg_wifi_rssi, 0), COALESCE(sample_count, 0)
+					FROM %s
+					WHERE tenant_id = $1 AND device_id = $2
+					  AND ($3::timestamptz IS NULL OR bucket >= $3)
+					  AND ($4::timestamptz IS NULL OR bucket <= $4)
+					ORDER BY bucket %s
+					LIMIT $5;
+				`, viewName, order)
+
+				aggRows, aggErr := h.DB.Query(aggQuery, device.TenantID, device.DeviceID, startTime, endTime, limit)
+				if aggErr == nil {
+					defer aggRows.Close()
+					records := make([]models.TelemetryRecord, 0)
+					for aggRows.Next() {
+						var bucket time.Time
+						var tID, dID string
+						var avgTemp, minTemp, maxTemp, avgHum, minHum, maxHum, avgRssi float64
+						var count int64
+						if err := aggRows.Scan(&bucket, &tID, &dID, &avgTemp, &minTemp, &maxTemp, &avgHum, &minHum, &maxHum, &avgRssi, &count); err == nil {
+							pMap := map[string]interface{}{
+								"temperature_c":     math.Round(avgTemp*100) / 100,
+								"temperature_c_min": math.Round(minTemp*100) / 100,
+								"temperature_c_max": math.Round(maxTemp*100) / 100,
+								"humidity_pct":      math.Round(avgHum*100) / 100,
+								"humidity_pct_min":  math.Round(minHum*100) / 100,
+								"humidity_pct_max":  math.Round(maxHum*100) / 100,
+								"wifi_rssi":         math.Round(avgRssi*100) / 100,
+								"sample_count":      count,
+							}
+							pBytes, _ := json.Marshal(pMap)
+							records = append(records, models.TelemetryRecord{
+								Time:      bucket,
+								TenantID:  tID,
+								DeviceID:  dID,
+								Payload:   pBytes,
+								CreatedAt: bucket,
+							})
+						}
+					}
+					writeJSON(w, http.StatusOK, map[string]interface{}{
+						"device_id":  device.DeviceID,
+						"tenant_id":  device.TenantID,
+						"resolution": resolution,
+						"count":      len(records),
+						"history":    records,
+					})
+					return
+				}
+			}
+
+			// Raw telemetry query
 			var query string
 			if order == "ASC" {
 				query = `
@@ -948,11 +1204,16 @@ func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request)
 					}
 				}
 
+				if resolution == "1m" || resolution == "5m" || resolution == "1h" {
+					records = downsampleRecords(records, resolution)
+				}
+
 				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"device_id": device.DeviceID,
-					"tenant_id": device.TenantID,
-					"count":     len(records),
-					"history":   records,
+					"device_id":  device.DeviceID,
+					"tenant_id":  device.TenantID,
+					"resolution": resolution,
+					"count":      len(records),
+					"history":    records,
 				})
 				return
 			}
@@ -967,15 +1228,50 @@ func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request)
 		records = make([]models.TelemetryRecord, 0)
 	}
 
+	if resolution == "1m" || resolution == "5m" || resolution == "1h" {
+		records = downsampleRecords(records, resolution)
+	}
+
 	if len(records) > limit {
 		records = records[len(records)-limit:]
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"device_id": id,
-		"tenant_id": "a0000000-0000-0000-0000-000000000001",
-		"count":     len(records),
-		"history":   records,
+		"device_id":  id,
+		"tenant_id":  "a0000000-0000-0000-0000-000000000001",
+		"resolution": resolution,
+		"count":      len(records),
+		"history":    records,
+	})
+}
+
+// RegenerateDeviceToken handles POST /api/v1/devices/{id}/token
+func (h *APIHandler) RegenerateDeviceToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+
+	newToken := generateSecureToken(id)
+
+	h.mu.Lock()
+	if dev, exists := h.memDevices[id]; exists {
+		dev.AuthToken = newToken
+		dev.UpdatedAt = time.Now().UTC()
+		h.memDevices[id] = dev
+	}
+	h.mu.Unlock()
+
+	if h.isDBReady() {
+		_, _ = h.DB.Exec("UPDATE devices SET auth_token = $1, updated_at = NOW() WHERE device_id = $2 OR id::text = $2", newToken, id)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "success",
+		"device_id":  id,
+		"auth_token": newToken,
+		"message":    "Device security token regenerated successfully",
 	})
 }
 
@@ -1003,16 +1299,24 @@ func (h *APIHandler) ProcessTelemetry(tenantID, channelID, deviceID string, tele
 			TenantID:   tenantID,
 			ChannelID:  channelID,
 			DeviceID:   deviceID,
-			Name:       deviceID,
-			DeviceType: "ESP32",
-			Status:     "online",
-			Metadata:   json.RawMessage(`{}`),
-			CreatedAt:  time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
+			Name:            deviceID,
+			DeviceType:      "ESP32",
+			Status:          "online",
+			AuthToken:       generateSecureToken(deviceID),
+			FirmwareVersion: "v1.0.0",
+			Metadata:        json.RawMessage(`{}`),
+			CreatedAt:       time.Now().UTC(),
+			UpdatedAt:       time.Now().UTC(),
 		}
 	} else {
 		existingDev.Status = "online"
 		existingDev.UpdatedAt = time.Now().UTC()
+		if existingDev.AuthToken == "" {
+			existingDev.AuthToken = generateSecureToken(deviceID)
+		}
+		if existingDev.FirmwareVersion == "" {
+			existingDev.FirmwareVersion = "v1.0.0"
+		}
 		if channelID != "" {
 			existingDev.ChannelID = channelID
 		}
@@ -1040,6 +1344,11 @@ func (h *APIHandler) ProcessTelemetry(tenantID, channelID, deviceID string, tele
 		h.memHistory[deviceID] = h.memHistory[deviceID][len(h.memHistory[deviceID])-500:]
 	}
 	h.mu.Unlock()
+
+	// Zero-latency real-time SSE broadcast
+	if h.sseBroker != nil {
+		h.sseBroker.Broadcast("telemetry", lt)
+	}
 
 	// 2. Persist to TimescaleDB if connected
 	if h.isDBReady() {
@@ -1211,6 +1520,212 @@ func (h *APIHandler) ResetDevices(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ProcessCommandAck handles incoming MQTT command acknowledgment from hardware
+func (h *APIHandler) ProcessCommandAck(deviceID string, payloadData []byte) error {
+	var ack struct {
+		CommandID string `json:"command_id"`
+		DeviceID  string `json:"device_id"`
+		Status    string `json:"status"`
+		Result    string `json:"result"`
+	}
+	if err := json.Unmarshal(payloadData, &ack); err != nil {
+		return err
+	}
+	if ack.DeviceID == "" {
+		ack.DeviceID = deviceID
+	}
+	now := time.Now().UTC()
+
+	h.mu.Lock()
+	if cmd, exists := h.memCommands[ack.CommandID]; exists {
+		cmd.Status = "ACKNOWLEDGED"
+		if ack.Status != "" {
+			cmd.Status = ack.Status
+		}
+		cmd.Response = ack.Result
+		cmd.AckAt = &now
+		h.memCommands[ack.CommandID] = cmd
+	}
+	h.mu.Unlock()
+
+	if h.isDBReady() && ack.CommandID != "" {
+		_, _ = h.DB.Exec(`
+			UPDATE device_commands 
+			SET status = $1, response = $2, ack_at = $3
+			WHERE id = $4;
+		`, ack.Status, ack.Result, now, ack.CommandID)
+	}
+
+	if h.sseBroker != nil {
+		h.sseBroker.Broadcast("command_ack", map[string]interface{}{
+			"command_id": ack.CommandID,
+			"device_id":  ack.DeviceID,
+			"status":     ack.Status,
+			"result":     ack.Result,
+			"ack_at":     now,
+		})
+	}
+
+	return nil
+}
+
+// AcknowledgeCommandHTTP handles POST /api/v1/devices/{id}/command_ack
+func (h *APIHandler) AcknowledgeCommandHTTP(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("id")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil || len(bodyBytes) == 0 {
+		writeError(w, http.StatusBadRequest, "Invalid or empty request body")
+		return
+	}
+	defer r.Body.Close()
+
+	if err := h.ProcessCommandAck(deviceID, bodyBytes); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Failed processing acknowledgment: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "success",
+		"message": "Command acknowledgment registered",
+	})
+}
+
+// SendCommand handles POST /api/v1/devices/{id}/commands
+// Publishes downlink actuation commands to MQTT (devices/{id}/commands) and logs the command.
+func (h *APIHandler) SendCommand(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("id")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+
+	var req struct {
+		Action  string          `json:"action"`
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid JSON payload")
+		return
+	}
+
+	if strings.TrimSpace(req.Action) == "" {
+		writeError(w, http.StatusBadRequest, "Command 'action' is required (e.g. set_relay, toggle_led, set_interval, reboot, calibrate)")
+		return
+	}
+
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	cmdID := fmt.Sprintf("cmd-%x", b)
+	now := time.Now().UTC()
+
+	cmd := models.DeviceCommand{
+		ID:       cmdID,
+		DeviceID: deviceID,
+		Action:   req.Action,
+		Payload:  req.Payload,
+		Status:   "SENT",
+		SentAt:   now,
+	}
+
+	h.mu.RLock()
+	if dev, ok := h.memDevices[deviceID]; ok {
+		cmd.TenantID = dev.TenantID
+	}
+	h.mu.RUnlock()
+
+	h.mu.Lock()
+	h.memCommands[cmdID] = cmd
+	h.mu.Unlock()
+
+	if h.isDBReady() {
+		_, _ = h.DB.Exec(`
+			INSERT INTO device_commands (id, device_id, tenant_id, action, payload, status, sent_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7);
+		`, cmd.ID, cmd.DeviceID, cmd.TenantID, cmd.Action, cmd.Payload, cmd.Status, cmd.SentAt)
+	}
+
+	// Dispatch downlink via MQTT
+	mqttPayload, _ := json.Marshal(map[string]interface{}{
+		"command_id": cmd.ID,
+		"device_id":  cmd.DeviceID,
+		"action":     cmd.Action,
+		"payload":    cmd.Payload,
+		"sent_at":    cmd.SentAt,
+	})
+
+	if h.mqttPub != nil {
+		if err := h.mqttPub.PublishCommand(deviceID, mqttPayload); err != nil {
+			log.Printf("[MQTT] Notice: Command published locally (%v)", err)
+		}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"status":  "success",
+		"message": fmt.Sprintf("Downlink command '%s' dispatched to %s", cmd.Action, cmd.DeviceID),
+		"command": cmd,
+	})
+}
+
+// GetDeviceCommands handles GET /api/v1/devices/{id}/commands
+func (h *APIHandler) GetDeviceCommands(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("id")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+
+	if h.isDBReady() {
+		rows, err := h.DB.Query(`
+			SELECT id, device_id, COALESCE(tenant_id, ''), action, COALESCE(payload, '{}'::jsonb), status, COALESCE(response, ''), sent_at, ack_at
+			FROM device_commands
+			WHERE device_id = $1
+			ORDER BY sent_at DESC
+			LIMIT 50;
+		`, deviceID)
+		if err == nil {
+			defer rows.Close()
+			cmds := make([]models.DeviceCommand, 0)
+			for rows.Next() {
+				var c models.DeviceCommand
+				var pBytes []byte
+				if err := rows.Scan(&c.ID, &c.DeviceID, &c.TenantID, &c.Action, &pBytes, &c.Status, &c.Response, &c.SentAt, &c.AckAt); err == nil {
+					c.Payload = json.RawMessage(pBytes)
+					cmds = append(cmds, c)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"count":    len(cmds),
+				"commands": cmds,
+			})
+			return
+		}
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	cmds := make([]models.DeviceCommand, 0)
+	for _, c := range h.memCommands {
+		if c.DeviceID == deviceID {
+			cmds = append(cmds, c)
+		}
+	}
+	sort.Slice(cmds, func(i, j int) bool {
+		return cmds[i].SentAt.After(cmds[j].SentAt)
+	})
+	if len(cmds) > 50 {
+		cmds = cmds[:50]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"count":    len(cmds),
+		"commands": cmds,
+	})
+}
+
 // evaluateCondition dynamically checks the rule operator and threshold against a numerical value.
 // Never uses hardcoded threshold or if logic!
 func evaluateCondition(val float64, op string, threshold float64) bool {
@@ -1333,6 +1848,13 @@ func (h *APIHandler) evaluateRules(tenantID, deviceID string, payloadData []byte
 
 				log.Printf("[GUARDRAIL ALARM] [OPEN] Device %s: %s", deviceID, msg)
 
+				if h.sseBroker != nil {
+					h.sseBroker.Broadcast("alarm", newAlarm)
+				}
+
+				// Dispatch automated outbound alert notifications (Slack / Discord / Webhook)
+				h.DispatchAlarmNotification(newAlarm)
+
 				if h.isDBReady() {
 					_, _ = h.DB.Exec(`
 						INSERT INTO alarms (id, tenant_id, rule_id, device_id, rule_name, severity, status, trigger_value, threshold, message, triggered_at)
@@ -1353,6 +1875,10 @@ func (h *APIHandler) evaluateRules(tenantID, deviceID string, payloadData []byte
 				h.mu.Unlock()
 
 				log.Printf("[GUARDRAIL ALARM] [RESOLVED] Device %s: %s normalized to %.1f", deviceID, rule.Field, val)
+
+				if h.sseBroker != nil {
+					h.sseBroker.Broadcast("alarm", existing)
+				}
 
 				if h.isDBReady() {
 					_, _ = h.DB.Exec(`
@@ -1725,6 +2251,108 @@ func (h *APIHandler) GetUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"count": len(usersList),
 		"users": usersList,
+	})
+}
+
+// DeleteUser handles DELETE /api/v1/users/{id} (Admin Only)
+func (h *APIHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil || caller.Role != "admin" {
+		writeError(w, http.StatusForbidden, "Forbidden: administrator privileges required")
+		return
+	}
+
+	userID := r.PathValue("id")
+	if userID == "" {
+		writeError(w, http.StatusBadRequest, "User ID is required in URL path")
+		return
+	}
+
+	// Prevent admin from deleting themselves or the primary system admin
+	if userID == "usr-admin-system-001" || userID == caller.UserID || userID == caller.Username || userID == h.AdminUsername {
+		writeError(w, http.StatusBadRequest, "Cannot delete primary administrator account or active session")
+		return
+	}
+
+	h.mu.Lock()
+	userToDelete, existsInMem := h.memUsers[userID]
+	if !existsInMem && !h.isDBReady() {
+		for uid, u := range h.memUsers {
+			if u.Username == userID {
+				userToDelete = u
+				userID = uid
+				existsInMem = true
+				break
+			}
+		}
+	}
+
+	if existsInMem {
+		if userToDelete.Role == "admin" || userToDelete.Username == h.AdminUsername {
+			h.mu.Unlock()
+			writeError(w, http.StatusBadRequest, "Cannot delete administrator accounts")
+			return
+		}
+		delete(h.memUsers, userID)
+
+		// Delete all workspaces owned by this user
+		tenantsToDelete := make([]string, 0)
+		for tid, t := range h.memTenants {
+			if t.OwnerID == userID || t.OwnerID == userToDelete.Username {
+				tenantsToDelete = append(tenantsToDelete, tid)
+			}
+		}
+
+		for _, tid := range tenantsToDelete {
+			delete(h.memTenants, tid)
+			for devId, dev := range h.memDevices {
+				if dev.TenantID == tid {
+					delete(h.memDevices, devId)
+					delete(h.memLatest, devId)
+					delete(h.memHistory, devId)
+				}
+			}
+			for chanId, ch := range h.memChannels {
+				if ch.TenantID == tid {
+					delete(h.memChannels, chanId)
+				}
+			}
+			for rId, r := range h.memRules {
+				if r.TenantID == tid {
+					delete(h.memRules, rId)
+				}
+			}
+			for aId, a := range h.memAlarms {
+				if a.TenantID == tid {
+					delete(h.memAlarms, aId)
+				}
+			}
+		}
+	}
+	h.mu.Unlock()
+
+	if h.isDBReady() {
+		var role, username string
+		err := h.DB.QueryRow("SELECT role, username FROM users WHERE id = $1 OR username = $1", userID).Scan(&role, &username)
+		if err == nil {
+			if role == "admin" || username == h.AdminUsername {
+				writeError(w, http.StatusBadRequest, "Cannot delete administrator accounts")
+				return
+			}
+			// Delete user's tenants (which cascades to channels, devices, telemetry, etc.)
+			_, _ = h.DB.Exec("DELETE FROM tenants WHERE owner_id = $1 OR owner_id = $2", userID, username)
+			// Delete user row
+			_, _ = h.DB.Exec("DELETE FROM users WHERE id = $1 OR username = $1", userID)
+		} else if !existsInMem {
+			writeError(w, http.StatusNotFound, "User not found")
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "success",
+		"message": "User and associated resources removed successfully",
+		"id":      userID,
 	})
 }
 

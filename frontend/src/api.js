@@ -87,6 +87,18 @@ export async function fetchUsers() {
   }
 }
 
+export async function deleteUser(userId) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/users/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Failed to delete user (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
 export function logout() {
   sessionStorage.removeItem('iot_jwt_token');
   sessionStorage.removeItem('iot_user');
@@ -104,9 +116,12 @@ export async function fetchHealth() {
   }
 }
 
-export async function fetchTenants() {
+export async function fetchTenants(ownerId = '') {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/tenants`, {
+    const url = ownerId 
+      ? `${API_BASE_URL}/api/v1/tenants?owner_id=${encodeURIComponent(ownerId)}`
+      : `${API_BASE_URL}/api/v1/tenants`;
+    const res = await fetch(url, {
       headers: getAuthHeaders(),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -223,10 +238,10 @@ export async function fetchLatestTelemetry(deviceId) {
   }
 }
 
-export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC') {
+export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC', resolution = 'raw') {
   try {
     const res = await fetch(
-      `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}`
+      `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}&resolution=${encodeURIComponent(resolution)}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -234,6 +249,36 @@ export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC')
   } catch (err) {
     console.warn(`[API] Failed fetching telemetry history for ${deviceId}:`, err);
     return [];
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Data Export & Reporting APIs (CSV & JSON)
+// ----------------------------------------------------------------------------
+
+export async function exportTelemetry(deviceId, format = 'csv') {
+  try {
+    const token = sessionStorage.getItem('iot_jwt_token') || localStorage.getItem('iot_jwt_token');
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/export?format=${format}&limit=5000`, {
+      headers,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const blob = await res.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.setAttribute('download', `telemetry_${deviceId}_${Date.now()}.${format}`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(downloadUrl);
+  } catch (err) {
+    console.error(`[API] Failed exporting telemetry for ${deviceId}:`, err);
+    throw err;
   }
 }
 
@@ -249,6 +294,37 @@ export async function sendTelemetryHTTP(deviceId, payload) {
   } catch (err) {
     console.error(`[API] Failed sending HTTP telemetry:`, err);
     throw err;
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Downlink Device Control & Actuation APIs (Two-Way Communication)
+// ----------------------------------------------------------------------------
+
+export async function sendDeviceCommand(deviceId, commandData) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/commands`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(commandData),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to dispatch command (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function fetchDeviceCommands(deviceId) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/commands`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.commands || [];
+  } catch (err) {
+    console.warn(`[API] Failed fetching commands for ${deviceId}:`, err);
+    return [];
   }
 }
 
@@ -362,4 +438,118 @@ export async function deleteAlarm(alarmId) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
+}
+
+// ----------------------------------------------------------------------------
+// Alarm Notification Dispatcher APIs (Slack, Discord, Webhooks)
+// ----------------------------------------------------------------------------
+
+export async function fetchNotificationChannels(tenantId = '') {
+  try {
+    const url = tenantId 
+      ? `${API_BASE_URL}/api/v1/notifications/channels?tenant_id=${encodeURIComponent(tenantId)}`
+      : `${API_BASE_URL}/api/v1/notifications/channels`;
+    const res = await fetch(url, { headers: getAuthHeaders() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.channels || [];
+  } catch (err) {
+    console.warn('[API] Failed fetching notification channels:', err);
+    return [];
+  }
+}
+
+export async function createNotificationChannel(channelData) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/channels`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(channelData),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+export async function deleteNotificationChannel(channelId) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/channels/${encodeURIComponent(channelId)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.json();
+}
+
+export async function testNotificationChannel(targetUrl, type = 'webhook') {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/test`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ target_url: targetUrl, type }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  return await res.json();
+}
+
+// ----------------------------------------------------------------------------
+// Device Provisioning & Over-the-Air (OTA) Updates
+// ----------------------------------------------------------------------------
+
+export async function regenerateDeviceToken(deviceId) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/token`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to rotate device token (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function triggerDeviceOTA(deviceId, otaData) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/ota`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(otaData),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to trigger OTA update (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function uploadFirmware(formData) {
+  const token = sessionStorage.getItem('iot_jwt_token') || localStorage.getItem('iot_jwt_token');
+  const headers = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE_URL}/api/v1/ota/firmware`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to upload firmware binary (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function fetchFirmwares() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/ota/firmware`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.firmwares || [];
+  } catch (err) {
+    console.warn('[API] Could not fetch firmwares:', err);
+    return [];
+  }
 }
