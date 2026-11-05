@@ -51,8 +51,14 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      DATABASE_URL: "postgres://${POSTGRES_USER:-iot_user}:${POSTGRES_PASSWORD:-iot_secure_password}@postgres:5432/${POSTGRES_DB:-iot_platform}?sslmode=disable"
-      MQTT_BROKER: "tcp://mosquitto:1883"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-iot_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-iot_platform}
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      MQTT_BROKER_URL: "tcp://mosquitto:1883"
       MQTT_CLIENT_ID: "iot-backend-service"
       ADMIN_API_KEY: "${ADMIN_API_KEY:-iot_admin_secret_key_2026}"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
