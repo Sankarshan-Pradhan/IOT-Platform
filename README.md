@@ -15,19 +15,18 @@ A high-performance, enterprise-grade multi-tenant IoT platform designed for high
 
 ## ⚡ Quick Start for New Users (1-Command Boot)
 
-If you are new to this project or setting it up on a fresh machine, you can run the **entire platform** (Database, MQTT Broker, Backend API, and Frontend Dashboard) with a single command:
+You can run the **entire platform** (Database, MQTT Broker, Backend API, and Frontend Dashboard) with a single command:
 
 ### 1. Prerequisites
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
-- [Git](https://git-scm.com/) (optional, to clone).
+- [Git](https://git-scm.com/) installed.
 
 ### 2. Launch Stack
 ```bash
 git clone <repository-url>
 cd iot-platform
-docker compose up --build
+docker compose up -d --build
 ```
-*(Or use `docker compose up -d` to run in the background).*
 
 ### 3. Open Application
 * **Web Dashboard:** [`http://localhost:3000`](http://localhost:3000)
@@ -49,24 +48,79 @@ go run firmware/tools/simulate_nodes.go
 
 ---
 
-## 📑 Table of Contents
+## 🧭 Complete End-to-End User Journey
 
-- [Quick Start for New Users](#-quick-start-for-new-users-1-command-boot)
-- [System Architecture](#-system-architecture)
-- [7 Enterprise Production Features](#-7-enterprise-production-features)
-  - [1. Downlink Device Control & Actuation](#1-downlink-device-control--actuation-two-way-communication)
-  - [2. Zero-Latency Real-Time Streaming (SSE)](#2-zero-latency-real-time-streaming-server-sent-events)
-  - [3. Outbound Alert Notification Channels](#3-outbound-alert-notification-channels)
-  - [4. TimescaleDB Continuous Aggregates & Downsampling](#4-timescaledb-continuous-aggregates--downsampling)
-  - [5. Historical Data Export & Reporting (CSV & JSON)](#5-historical-data-export--reporting-csv--json)
-  - [6. Device Provisioning & Over-the-Air (OTA) Updates](#6-device-provisioning--over-the-air-ota-updates)
-  - [7. End-to-End Multi-Stage Containerization](#7-end-to-end-multi-stage-containerization)
-- [Services Breakdown](#-services-breakdown)
-- [Local Development Setup (Without Docker)](#-local-development-setup-without-docker)
-- [Firmware Flashing Guide (Physical ESP32)](#-firmware-flashing-guide-physical-esp32)
-- [Repository Structure](#-repository-structure)
-- [Documentation Index](#-documentation-index)
-- [License](#-license)
+```mermaid
+flowchart LR
+    A["1. Sign Up & Login"] --> B["2. Create Workspace"]
+    B --> C["3. Groups & Channels"]
+    C --> D["4. Add / Assign Devices"]
+    D --> E["5. Flash ESP32 Hardware"]
+    E --> F["6. Live Monitoring & Alerts"]
+```
+
+### Step 1: Sign Up & Login
+1. Open [`http://localhost:3000`](http://localhost:3000).
+2. Click **Create an account** on the login screen.
+3. Enter your **Full Name**, **Mobile Number**, **Email**, **Username**, and **Password**.
+4. Log into your dedicated operator session.
+
+### Step 2: Create Your Workspace (Multi-Tenant Isolation)
+1. On initial login, new users are greeted by the **Step 1: Workspace Setup** onboarding card.
+2. Enter a **Workspace Name** (e.g. *Smart Factory Alpha*, *Greenhouse Zone 1*) and slug.
+3. Click **Create Workspace & Continue**.
+4. All telemetry, channels, devices, guardrails, and alarms are isolated strictly to your workspace.
+5. Users can also delete workspaces (including their default workspace) anytime. When 0 workspaces remain, the view seamlessly resets to the setup card.
+
+### Step 3: Groups & Telemetry Channels
+1. In the sidebar, click **Groups & Channels**.
+2. Click **+ Add Channel**:
+   - **Channel Name**: e.g., *Deep Freeze Units*
+   - **Group Name**: e.g., *Refrigeration*, *HVAC*, *Assembly Line*
+   - **Topic Route**: e.g., `channels/chan-cold-01/telemetry`
+3. Channels organize edge devices into logical zones and unified MQTT topics.
+
+### Step 4: Register or Assign Sensor Devices
+The platform provides flexible device management:
+
+- **Assign Existing Devices into a Channel (Recommended)**:
+  - On any channel card, click **+ Add Device**.
+  - Under the **"Select Existing Device"** tab, pick any previously created sensor in the workspace from the dropdown.
+  - Click **Assign Device to Channel** (or **Move Device to Channel**) to link it with 1 click.
+  - Channels dynamically display `Nodes: X connected` and render clickable badges for each device (`[⚡ esp32-sensor-01]`). Click `(×)` on any badge to unlink a device back to standalone status.
+- **Register Brand New Device**:
+  - In **Clients / Devices** or inside the modal's **"Register Brand New Device"** tab, enter a Device ID (e.g. `esp32-dht22-01`), display name, hardware type, and optional channel.
+
+### Step 5: Connect Physical Hardware (ESP32)
+1. Connect your physical ESP32 to your computer via USB.
+2. Open the code in **Arduino IDE** or **PlatformIO** (located in `firmware/esp32-dht22` or `firmware/arduino-ide`).
+3. Set your local Wi-Fi SSID, Password, and your computer's local LAN IP as the MQTT Host (`192.168.x.x:1883`).
+4. Flash the code via USB. Once flashed, the ESP32 connects to Wi-Fi and streams data independently without needing the USB cable!
+
+### Step 6: Live Telemetry Visualization
+- Navigate to **Live Dashboard**.
+- Pick any device in the top **Active Sensors** selector strip.
+- View **Live Metric Cards** (Temperature, Humidity, Heat Index with Min/Max).
+- Analyze **Interactive Charts** (continuous 5s updates + zero-latency SSE).
+- Toggle **Compare Mode** to evaluate two sensors side-by-side.
+- Export sensor datasets to **CSV** or **JSON** with one click.
+
+---
+
+## 📡 What is Over-The-Air (OTA) Update? (Simple Explanation)
+
+**Over-The-Air (OTA)** means updating your ESP32's software **wirelessly over Wi-Fi without needing a USB cable**.
+
+### The Problem It Solves
+Imagine an ESP32 mounted 15 feet high on a factory ceiling or sealed inside a waterproof box. If you need to fix a bug or change calculation logic:
+- **Without OTA**: You have to bring a ladder and a laptop, climb up, plug in a USB cable, and re-flash the board.
+- **With OTA**: You compile your code on your laptop, upload the `.bin` file to the platform dashboard, and click **Trigger OTA**. The ESP32 downloads the update over Wi-Fi, flashes its own memory, and restarts in 10 seconds!
+
+### Fail-Safe "Two-Room" Partitioning
+The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
+1. While your device runs in Slot A, it downloads the new code into Slot B.
+2. Only after the file is 100% verified does it switch to Slot B and reboot.
+3. If Wi-Fi drops midway through downloading, the device safely discards the download and keeps running in Slot A — **it never bricks or dies**.
 
 ---
 
@@ -93,6 +147,8 @@ go run firmware/tools/simulate_nodes.go
                                   |         Go Backend Server (:8080)     |
                                   |  - Dual Mode (TimescaleDB + In-Memory)|
                                   |  - SSE Broker (:stream, 0ms latency)  |
+                                  |  - Device Registry & CRUD Handlers    |
+                                  |  - Dynamic Channel Aggregation Engine |
                                   |  - Outbound Alert Dispatchers         |
                                   |  - Continuous Rollups & Downsampler   |
                                   |  - CSV/JSON Data Streaming Exporter   |
@@ -104,83 +160,85 @@ go run firmware/tools/simulate_nodes.go
         +-------------------------------------+        +-------------------------------------+
         |     TimescaleDB (PostgreSQL 16)     |        |   React 18 + Vite Dashboard (:3000) |
         |  ├── users, tenants, channels       |        |  ├── Workspaces & Tenancy Manager   |
-        |  ├── telemetry (Hypertable)         |        |  ├── Live 0ms SSE Telemetry Stream  |
-        |  ├── telemetry_1m/5m/1h (Rollups)   |        |  ├── Device Control Panel (Relays)  |
-        |  ├── device_commands & channels     |        |  ├── Rollup Downsampling (1m/5m/1h) |
+        |  ├── devices (channel_id FK)        |        |  ├── Groups & Telemetry Channels    |
+        |  ├── telemetry (Hypertable)         |        |  ├── Assign Existing Device Modal   |
+        |  ├── telemetry_1m/5m/1h (Rollups)   |        |  ├── Live 0ms SSE Telemetry Stream  |
+        |  ├── device_commands & channels     |        |  ├── Device Control Panel (Relays)  |
+        |  ├── rules & alarms                 |        |  ├── Rollup Downsampling (1m/5m/1h) |
         |  └── 30-Day Chunk Retention Policy  |        |  └── CSV/JSON Data Export Trigger   |
         +-------------------------------------+        +-------------------------------------+
 ```
 
 ---
 
-## 🚀 7 Enterprise Production Features
+## 🚀 8 Enterprise Production Features
 
-### 1. Downlink Device Control & Actuation (Two-Way Communication)
-Telemetry flows upstream, but operators can also dispatch instant hardware commands downstream:
-* **MQTT Topics:** Subscribes to `devices/{id}/commands` and ingests acknowledgments on `devices/{id}/command_ack`.
-* **REST Endpoints:** `POST /api/v1/devices/{id}/commands` and `GET /api/v1/devices/{id}/commands`.
-* **Supported Hardware Actions:**
-  * `set_relay`: Energizes or de-energizes external AC/DC relays (`state: true | false`).
-  * `toggle_led`: Controls onboard status beacon LED.
-  * `set_interval`: Dynamically updates sensor sampling rate (1s to 60s).
-  * `reboot`: Dispatches acknowledgment and triggers hardware restart via `ESP.restart()`.
-* **UI:** Interactive cards, sampling rate pills, reboot confirmation modal, and real-time command dispatch log in [`DeviceControlPanel.jsx`](frontend/src/components/DeviceControlPanel.jsx).
-
----
+### 1. Two-Way Downlink Device Control & Actuation
+- **MQTT Topics:** Dispatches to `devices/{id}/commands`, receives ACKs on `devices/{id}/command_ack`.
+- **Supported Actions:**
+  - `set_relay`: Turn physical AC/DC equipment ON/OFF (`state: true | false`).
+  - `toggle_led`: Control onboard status LED.
+  - `set_interval`: Adjust sensor sampling frequency remotely (1s to 60s).
+  - `reboot`: Trigger remote microcontroller reboot via `ESP.restart()`.
+- **UI:** Interactive controls in [`DeviceControlPanel.jsx`](frontend/src/components/DeviceControlPanel.jsx).
 
 ### 2. Zero-Latency Real-Time Streaming (Server-Sent Events)
-Replaces or complements standard 5-second polling with instant push notifications:
-* **SSE Broker:** [`backend/handlers/sse.go`](backend/handlers/sse.go) provides zero-latency event streaming via `GET /api/v1/telemetry/stream`.
-* **Zero Overhead:** Native Go `http.Flusher` implementation with automatic 15-second keep-alive heartbeats and firewall-friendly HTTP/1.1 transport.
-* **Events Broadcasted:** `telemetry` (instant ingestion), `alarm` (guardrail violation/resolution), and `command_ack` (device action confirmation).
-* **UI Integration:** Animated `Live SSE (0ms)` pulse indicator in header; automatic fallback to polling if connection drops.
+- **SSE Broker:** [`backend/handlers/sse.go`](backend/handlers/sse.go) on `GET /api/v1/telemetry/stream`.
+- **Events Broadcasted:** `telemetry` (0ms push), `alarm` (guardrail violations), `command_ack` (device receipts).
+- **UI:** Animated pulse badge with automatic fallback to 5s polling.
+
+### 3. Hierarchical Groups, Channels & Device Linking
+- **Relational Schema:** `tenants` → `channels` → `devices`.
+- **Channel Assignment:** Assign, move, or unlink previously created devices with 1 click.
+- **Dynamic Node Counting:** Channels report real connected devices count via `devices_count` subqueries.
+
+### 4. Outbound Alert Notification Channels
+- **Supported Providers:** **Discord** Webhooks, **Slack** Incoming Webhooks, and custom **HTTP POST Webhooks**.
+- **Automated Dispatch:** Triggers instant alert payloads whenever a `CRITICAL` alarm fires.
+
+### 5. TimescaleDB Continuous Aggregates & Downsampling
+- **Continuous Views:** 1-minute (`telemetry_1m`), 5-minute (`telemetry_5m`), and 1-hour (`telemetry_1h`) rollups.
+- **Data Retention Policy:** Automatically drops raw hypertable data older than 30 days.
+
+### 6. Historical Data Export & Reporting (CSV & JSON)
+- **Streaming Exporter:** [`backend/handlers/export.go`](backend/handlers/export.go) on `GET /api/v1/devices/{id}/telemetry/export`.
+- **Formats:** Download CSV or JSON formatted history straight from the chart toolbar.
+
+### 7. Over-the-Air (OTA) Updates & Device Provisioning
+- **Per-Device Auth Tokens:** Secure token generation and rotation endpoint `POST /api/v1/devices/{id}/token`.
+- **Binary Distribution:** Multipart `.bin` binary uploads, SHA-256 verification, and downlink OTA commands.
+
+### 8. End-to-End Multi-Stage Containerization
+- **Backend:** `golang:1.24-alpine` → `alpine:3.20` with integrated healthchecks.
+- **Frontend:** `node:20-alpine` → `nginx:alpine` with reverse proxy and SSE buffering disabled.
+- **Orchestration:** Single root [`docker-compose.yml`](docker-compose.yml).
 
 ---
 
-### 3. Outbound Alert Notification Channels
-When guardrail safety rules detect critical threshold violations, operators are instantly notified externally:
-* **Supported Channels:** **Discord** Webhooks, **Slack** Incoming Webhooks, and generic **HTTP POST Webhooks**.
-* **Automatic Dispatch:** `evaluateRules()` dispatches async alerts when `CRITICAL` alarms fire.
-* **UI Channel Manager:** Dedicated **Alert Channels** tab in [`GuardrailsModal.jsx`](frontend/src/components/GuardrailsModal.jsx) with webhook registration and live "Test Ping" button.
+## 🔌 API Reference Summary
 
----
-
-### 4. TimescaleDB Continuous Aggregates & Downsampling
-Optimized for long-range analytics across millions of time-series data points:
-* **Continuous Aggregate Views:** Defined in [`infra/init.sql`](infra/init.sql):
-  * `telemetry_1m`: 1-minute bucket rollups (`avg`, `min`, `max`, `count`).
-  * `telemetry_5m`: 5-minute bucket rollups.
-  * `telemetry_1h`: 1-hour bucket rollups.
-* **Automated Refresh Policies:** Scheduled via `add_continuous_aggregate_policy()`.
-* **Data Retention Policy:** Automatically purges raw hypertable chunks older than 30 days (`add_retention_policy('telemetry', INTERVAL '30 days')`).
-* **UI Downsampling:** Dynamic resolution pills (`Raw`, `1m`, `5m`, `1h`) in [`TelemetryChart.jsx`](frontend/src/components/TelemetryChart.jsx).
-
----
-
-### 5. Historical Data Export & Reporting (CSV & JSON)
-Allows engineers and auditors to extract time-series datasets directly from the UI:
-* **Backend Streaming Engine:** [`backend/handlers/export.go`](backend/handlers/export.go) on `GET /api/v1/devices/{id}/telemetry/export?format=csv|json`.
-* **Formatted CSV Streams:** Includes ISO-8601 timestamps, tenant ID, device ID, temperature, humidity, WiFi RSSI, and raw payload.
-* **Direct UI Downloads:** Dedicated **CSV** and **JSON** export buttons in the telemetry chart toolbar.
-
----
-
-### 6. Device Provisioning & Over-the-Air (OTA) Updates
-Secures edge devices and enables remote firmware updates over Wi-Fi:
-* **Per-Device Auth Tokens:** Stored in `devices` table with secure token generation (`tok_{deviceID}_{hex}`) and rotation endpoint `POST /api/v1/devices/{id}/token`.
-* **Firmware Distribution:** [`backend/handlers/ota.go`](backend/handlers/ota.go):
-  * `POST /api/v1/ota/firmware`: Multi-part `.bin` firmware file upload with SHA-256 verification.
-  * `GET /api/v1/ota/firmware/{filename}`: Raw binary streaming for ESP32 `HTTPUpdate`.
-  * `POST /api/v1/devices/{id}/ota`: Dispatches remote downlink flashing command.
-* **UI Controls:** Token copy, token rotation, and OTA firmware modal inside [`DeviceControlPanel.jsx`](frontend/src/components/DeviceControlPanel.jsx).
-
----
-
-### 7. End-to-End Multi-Stage Containerization
-Production-ready container setup for seamless deployment:
-* **Backend Container:** Multi-stage build (`golang:1.24-alpine` -> `alpine:3.20`) with healthchecks in [`backend/Dockerfile`](backend/Dockerfile).
-* **Frontend Container:** Multi-stage build (`node:20-alpine` -> `nginx:alpine`) with reverse proxy and SSE buffering rules in [`frontend/Dockerfile`](frontend/Dockerfile) and [`frontend/nginx.conf`](frontend/nginx.conf).
-* **Root Compose:** [`docker-compose.yml`](docker-compose.yml) orchestrating all 4 services with a single command.
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/v1/auth/register` | Register new user account |
+| `POST` | `/api/v1/auth/login` | Authenticate and obtain JWT token |
+| `GET` | `/api/v1/tenants` | List workspaces for caller |
+| `POST` | `/api/v1/tenants` | Create new workspace |
+| `DELETE` | `/api/v1/tenants/{id}` | Delete workspace (including default org) |
+| `GET` | `/api/v1/channels` | List channels with dynamic `devices_count` |
+| `POST` | `/api/v1/channels` | Create telemetry channel |
+| `DELETE` | `/api/v1/channels/{id}` | Delete channel |
+| `GET` | `/api/v1/devices` | Query devices (filter by `tenant_id` / `channel_id`) |
+| `POST` | `/api/v1/devices` | Register new sensor device |
+| `PATCH` | `/api/v1/devices/{id}` | Update device (assign/unlink channel, name, type) |
+| `DELETE` | `/api/v1/devices/{id}` | Delete device and its telemetry |
+| `POST` | `/api/v1/devices/{id}/telemetry` | HTTP telemetry ingestion |
+| `GET` | `/api/v1/devices/{id}/telemetry/latest` | Fetch latest telemetry record |
+| `GET` | `/api/v1/devices/{id}/telemetry/history` | Query time-series telemetry history |
+| `GET` | `/api/v1/devices/{id}/telemetry/export` | Stream CSV or JSON historical data |
+| `GET` | `/api/v1/telemetry/stream` | Zero-latency Server-Sent Events (SSE) stream |
+| `POST` | `/api/v1/devices/{id}/commands` | Dispatch downlink hardware actuation command |
+| `POST` | `/api/v1/ota/firmware` | Upload `.bin` firmware binary for OTA |
+| `POST` | `/api/v1/devices/{id}/ota` | Trigger wireless Over-The-Air flashing |
 
 ---
 
@@ -199,36 +257,26 @@ Production-ready container setup for seamless deployment:
 
 ## 💻 Local Development Setup (Without Docker)
 
-If you prefer to edit code natively without Docker:
-
-### 1. Requirements
-* [Go 1.24+](https://go.dev/)
-* [Node.js 20+](https://nodejs.org/)
-
-### 2. Start Backend Service
 ```bash
+# 1. Backend Service (Auto-falls back to in-memory mode if DB is offline)
 cd backend
 go run main.go
-```
-*Note: The backend automatically falls back to in-memory mode if a local TimescaleDB instance is not detected, so it runs immediately with zero configuration!*
 
-### 3. Start Frontend Dashboard
-```bash
+# 2. Frontend Dashboard
 cd frontend
 npm install
 npm run dev
 ```
-Open [`http://localhost:3000`](http://localhost:3000) in your browser.
 
 ---
 
 ## 🔌 Firmware Flashing Guide (Physical ESP32)
 
-1. Review the [Hardware Wiring Guide](docs/esp32_dht22_wiring_guide.md) to wire the DHT22 and relay module:
-   * **DHT22 DATA** → GPIO 4
-   * **Relay IN** → GPIO 26
-   * **Status LED** → GPIO 2
-2. Edit WiFi credentials and backend IP in `firmware/esp32-dht22/include/config.h`.
+1. Review the [Hardware Wiring Guide](docs/esp32_dht22_wiring_guide.md):
+   - **DHT22 DATA** → GPIO 4
+   - **Relay IN** → GPIO 26
+   - **Status LED** → GPIO 2
+2. Edit Wi-Fi credentials and your computer's LAN IP in `firmware/esp32-dht22/include/config.h`.
 3. Flash using PlatformIO:
    ```bash
    cd firmware/esp32-dht22
@@ -245,6 +293,7 @@ Open [`http://localhost:3000`](http://localhost:3000) in your browser.
 iot-platform/
 ├── docker-compose.yml             # Single-command orchestration for entire stack
 ├── go.mod / go.sum                # Go root module definition
+├── README.md                      # Comprehensive project guide & documentation
 │
 ├── backend/                       # Go REST API & Ingestion Service
 │   ├── handlers/                  # Route handlers, SSE broker, OTA, alerts, export
@@ -252,60 +301,44 @@ iot-platform/
 │   │   ├── ota.go                 # Firmware binary server & OTA dispatch
 │   │   ├── notifications.go       # Slack, Discord & Webhook alert dispatcher
 │   │   ├── sse.go                 # Zero-latency Server-Sent Events broker
-│   │   ├── handlers.go            # CRUD, downsampling & device commands
-│   │   └── handlers_test.go       # 14 unit tests covering all features
+│   │   ├── handlers.go            # Device CRUD, channel linking, downsampling & commands
+│   │   └── handlers_test.go       # Unit tests covering all features
 │   ├── models/                    # Data transfer objects & models
 │   ├── mqtt/                      # Paho MQTT subscriber & command publisher
 │   ├── Dockerfile                 # Multi-stage production container
-│   ├── main.go                    # Server entry point & auto-reconnect loop
-│   └── README.md                  # Backend API documentation
+│   └── main.go                    # Server entry point & auto-reconnect loop
 │
 ├── frontend/                      # React 18 + Vite Management Dashboard
 │   ├── src/
 │   │   ├── components/            # UI components
+│   │   │   ├── AddDeviceModal.jsx     # Dual-tab modal: select existing or register new
+│   │   │   ├── ChannelsView.jsx       # Groups & channels with linked device badges & unlinking
+│   │   │   ├── DevicesView.jsx        # Device inventory with channel/group tags
+│   │   │   ├── DeviceSelector.jsx     # Live dashboard device selector with channel labels
 │   │   │   ├── DeviceControlPanel.jsx # Two-way relay control, LED, reboot & OTA
 │   │   │   ├── TelemetryChart.jsx     # Dual Y-axis charts with 1m/5m/1h rollups & export
 │   │   │   ├── GuardrailsModal.jsx    # Threshold safety rules & Alert Channels
-│   │   │   ├── UserDashboard.jsx      # Operator cockpit with live SSE push
-│   │   │   ├── AdminDashboard.jsx     # Supervisory monitoring & user management
-│   │   │   ├── AuthScreen.jsx         # Full-page login & registration gate
-│   │   │   └── ...
-│   │   ├── api.js                 # Unified API client
+│   │   │   ├── UserDashboard.jsx      # Operator cockpit with live SSE push & onboarding
+│   │   │   └── AdminDashboard.jsx     # Supervisory monitoring & user management
+│   │   ├── api.js                 # Unified API client with device update endpoints
 │   │   └── App.jsx                # Core application routing
 │   ├── nginx.conf                 # Production Nginx reverse proxy with SSE buffering off
-│   ├── Dockerfile                 # Multi-stage production Nginx container
-│   └── README.md                  # Frontend feature walkthrough
+│   └── Dockerfile                 # Multi-stage production Nginx container
 │
 ├── firmware/                      # Edge Microcontroller Firmware
 │   ├── esp32-dht22/               # PlatformIO C++ firmware project
-│   │   └── src/main.cpp           # Non-blocking loop, downlink commands, OTA
 │   ├── arduino-ide/               # Standalone Arduino sketches
-│   ├── tools/
-│   │   └── simulate_nodes.go      # Multi-node simulated sensor CLI
-│   └── README.md                  # Firmware guide & flashing steps
+│   └── tools/
+│       └── simulate_nodes.go      # Multi-node simulated sensor CLI
 │
 ├── infra/                         # Infrastructure Configurations
-│   ├── docker-compose.yml         # Compose stack
-│   ├── init.sql                   # Hypertables, continuous rollups, triggers
-│   ├── mosquitto.conf             # Mosquitto broker configuration
-│   └── README.md                  # Database & broker documentation
+│   ├── init.sql                   # Hypertables, continuous rollups, triggers, foreign keys
+│   └── mosquitto.conf             # Mosquitto broker configuration
 │
 └── docs/                          # Architecture & Wiring Documentation
     ├── database_schema.md         # TimescaleDB hypertable schema design
-    ├── esp32_dht22_wiring_guide.md# Hardware pinout & wiring schematics
-    └── README.md                  # Documentation index
+    └── esp32_dht22_wiring_guide.md# Hardware pinout & wiring schematics
 ```
-
----
-
-## 📚 Documentation Index
-
-- [Backend API Specification & Architecture](backend/README.md)
-- [Frontend Dashboard & Component Guide](frontend/README.md)
-- [Firmware Setup, PlatformIO & Arduino Guide](firmware/README.md)
-- [Hardware Wiring & Assembly Guide](docs/esp32_dht22_wiring_guide.md)
-- [Database Schema & TimescaleDB Hypertable Design](docs/database_schema.md)
-- [Infrastructure & Docker Compose Guide](infra/README.md)
 
 ---
 

@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
-import { Radio, Plus, Hash, Copy, Check, Activity, Trash2, ShieldCheck } from 'lucide-react';
+import { Radio, Plus, Hash, Copy, Check, Activity, Trash2, ShieldCheck, Cpu, ArrowRight, X, Link as LinkIcon } from 'lucide-react';
 
 export default function ChannelsView({
   channels,
+  devices = [],
   onOpenAddChannel,
   onOpenAddDevice,
+  onUnlinkDevice,
   onDeleteChannel,
+  onSelectDevice,
+  onNavigateToDashboard,
   isAdmin = false,
 }) {
   const [copiedId, setCopiedId] = useState(null);
@@ -137,16 +141,74 @@ export default function ChannelsView({
                 <div className="mt-2.5 px-3 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/60 text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate">
                   MQTT: <span className="text-slate-800 dark:text-slate-300 font-semibold">{c.topic || `devices/${c.id}/telemetry`}</span>
                 </div>
+
+                {/* Connected Devices List */}
+                {(() => {
+                  const assigned = (devices || []).filter((d) => d.channel_id === c.id);
+                  if (assigned.length === 0) {
+                    return (
+                      <p className="mt-3 text-[11px] text-slate-400 italic">
+                        No devices assigned yet.
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="mt-3 space-y-1.5">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
+                        Linked Sensor Nodes ({assigned.length})
+                      </span>
+                      <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                        {assigned.map((d) => (
+                          <div
+                            key={d.device_id}
+                            className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md text-[10px] font-mono bg-cyan-50 hover:bg-cyan-100/80 text-cyan-800 border border-cyan-200 transition"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (onSelectDevice) onSelectDevice(d.device_id);
+                                if (onNavigateToDashboard) onNavigateToDashboard();
+                              }}
+                              className="inline-flex items-center gap-1 font-semibold hover:underline cursor-pointer"
+                              title={`Inspect ${d.name || d.device_id}`}
+                            >
+                              <Cpu className="w-2.5 h-2.5 text-cyan-600" />
+                              <span>{d.device_id}</span>
+                              <ArrowRight className="w-2.5 h-2.5 opacity-60" />
+                            </button>
+                            {!isAdmin && onUnlinkDevice && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (window.confirm(`Unlink sensor "${d.name || d.device_id}" from channel "${c.name}"? It will become a standalone sensor.`)) {
+                                    onUnlinkDevice(d.device_id);
+                                  }
+                                }}
+                                className="p-0.5 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
+                                title="Unlink from this channel"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Footer */}
               <div className="mt-5 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-                <span>Nodes: <strong className="text-slate-800 dark:text-slate-200">{c.devices_count || 0} connected</strong></span>
+                <span>Nodes: <strong className="text-slate-800 dark:text-slate-200">{(devices || []).filter((d) => d.channel_id === c.id).length || c.devices_count || 0} connected</strong></span>
                 <button
-                  onClick={onOpenAddDevice}
-                  className="text-cyan-600 dark:text-cyan-400 hover:underline font-semibold transition"
+                  type="button"
+                  onClick={() => onOpenAddDevice && onOpenAddDevice(c.id)}
+                  className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline font-bold transition cursor-pointer"
                 >
-                  + Add Device
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add Device</span>
                 </button>
               </div>
             </div>

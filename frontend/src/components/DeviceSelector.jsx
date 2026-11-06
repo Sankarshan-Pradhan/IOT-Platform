@@ -1,8 +1,9 @@
 import React from 'react';
-import { Cpu, Wifi, WifiOff, CheckCircle2, Clock, Plus, Trash2 } from 'lucide-react';
+import { Cpu, Wifi, WifiOff, CheckCircle2, Clock, Plus, Trash2, Radio } from 'lucide-react';
 
 export default function DeviceSelector({
   devices,
+  channels = [],
   selectedDeviceId,
   onSelectDevice,
   latestDataMap,
@@ -132,9 +133,25 @@ export default function DeviceSelector({
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                     )}
                   </div>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {device.name || 'ESP32 Telemetry Node'}
-                  </span>
+                  <div className="flex flex-col">
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                      {device.name || 'ESP32 Telemetry Node'}
+                    </span>
+                    {(() => {
+                      const ch = (channels || []).find((c) => c.id === device.channel_id);
+                      if (ch) {
+                        return (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-cyan-600 dark:text-cyan-400 font-medium mt-0.5">
+                            <Radio className="w-2.5 h-2.5" />
+                            <span>{ch.name}</span>
+                            <span className="text-slate-300 dark:text-slate-600">•</span>
+                            <span className="text-[9px] uppercase font-bold text-slate-400">{ch.group || 'General'}</span>
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-1.5">

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Cpu, Plus, Wifi, Copy, Check, ShieldCheck, ArrowRight, Key, Trash2 } from 'lucide-react';
+import { Cpu, Plus, Wifi, Copy, Check, ShieldCheck, ArrowRight, Key, Trash2, Radio } from 'lucide-react';
 
 export default function DevicesView({
   devices,
+  channels = [],
   latestDataMap,
   onOpenAddDevice,
   onSelectDevice,
@@ -161,6 +162,28 @@ export default function DevicesView({
                   <p className="text-xs font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
                     ID: {device.device_id}
                   </p>
+
+                  {/* Linked Channel & Group Badge */}
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {(() => {
+                      const assignedChannel = (channels || []).find((c) => c.id === device.channel_id);
+                      if (assignedChannel) {
+                        return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-50 text-cyan-800 border border-cyan-200">
+                            <Radio className="w-3 h-3 text-cyan-600" />
+                            <span>{assignedChannel.name}</span>
+                            <span className="text-cyan-400">•</span>
+                            <span className="text-[9px] uppercase font-bold text-cyan-700">{assignedChannel.group || 'General'}</span>
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                          <span>Standalone Sensor (No Channel)</span>
+                        </span>
+                      );
+                    })()}
+                  </div>
 
                   {/* Latest metrics preview */}
                   <div className="mt-4 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800/80 grid grid-cols-2 gap-2 text-xs">

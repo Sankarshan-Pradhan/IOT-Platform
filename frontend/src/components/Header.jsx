@@ -58,7 +58,7 @@ export default function Header({
               )}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              {activeTenant?.name || 'Default Workspace'}
+              {activeTenant?.name || (currentUser?.role === 'admin' ? 'System Console' : 'No Workspace (Setup Required)')}
             </p>
           </div>
         </div>

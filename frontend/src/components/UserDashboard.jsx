@@ -22,6 +22,8 @@ import {
   fetchChannels, 
   createChannel, 
   deleteChannel, 
+  createDevice,
+  updateDevice,
   fetchDevices, 
   fetchLatestTelemetry, 
   fetchTelemetryHistory, 
@@ -51,6 +53,15 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const [tenants, setTenants] = useState([]);
   const [activeTenant, setActiveTenant] = useState(null);
 
+  const hasWorkspace = Boolean(activeTenant || (Array.isArray(tenants) && tenants.length > 0));
+
+  // Lock to workspace setup tab if user has no workspace yet
+  useEffect(() => {
+    if (!hasWorkspace && !adminUser && activeTab !== 'tenants') {
+      setActiveTab('tenants');
+    }
+  }, [hasWorkspace, adminUser, activeTab]);
+
   // User's channels & devices
   const [channels, setChannels] = useState([]);
   const [devices, setDevices] = useState([]);
@@ -59,6 +70,8 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
 
   // Modals state
   const [isAddDeviceModalOpen, setIsAddDeviceModalOpen] = useState(false);
+  const [targetChannelId, setTargetChannelId] = useState('');
+  const [addDeviceInitialMode, setAddDeviceInitialMode] = useState('existing');
   const [isAddTenantModalOpen, setIsAddTenantModalOpen] = useState(false);
   const [isAddChannelModalOpen, setIsAddChannelModalOpen] = useState(false);
   const [isGuardrailsOpen, setIsGuardrailsOpen] = useState(false);
@@ -351,11 +364,46 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   };
 
   // Device Actions
-  const handleDeviceRegistered = (newDevice) => {
-    setDevices((prev) => [...prev, newDevice]);
-    setSelectedDeviceId(newDevice.device_id);
-    setIsAddDeviceModalOpen(false);
-    loadUserData();
+  const handleDeviceRegistered = async (newDevice) => {
+    try {
+      const created = await createDevice({
+        ...newDevice,
+        tenant_id: activeTenant?.id || newDevice.tenant_id,
+      });
+      setDevices((prev) => [...prev.filter((d) => d.device_id !== created.device_id), created]);
+      setSelectedDeviceId(created.device_id);
+      setIsAddDeviceModalOpen(false);
+      setTargetChannelId('');
+      await loadUserData();
+    } catch (err) {
+      alert(`Could not register device: ${err.message}`);
+    }
+  };
+
+  const handleOpenAddDevice = (channelId = '', mode = 'existing') => {
+    setTargetChannelId(channelId);
+    setAddDeviceInitialMode(mode);
+    setIsAddDeviceModalOpen(true);
+  };
+
+  const handleDeviceAssigned = async (deviceId, channelId) => {
+    try {
+      await updateDevice(deviceId, { channel_id: channelId });
+      setIsAddDeviceModalOpen(false);
+      setTargetChannelId('');
+      await loadUserData();
+    } catch (err) {
+      alert(`Could not link device to channel: ${err.message}`);
+    }
+  };
+
+  const handleUnlinkDevice = async (deviceId) => {
+    try {
+      await updateDevice(deviceId, { channel_id: '' });
+      await loadUserData();
+    } catch (err) {
+      alert(`Could not unlink device: ${err.message}`);
+    }
   };
 
   const handleDeleteDevice = async (deviceId) => {
@@ -569,8 +617,9 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
               activeTenant={activeTenant}
               setActiveTenant={setActiveTenant}
               onOpenAddTenant={() => setIsAddTenantModalOpen(true)}
-              onOpenAddDevice={() => setIsAddDeviceModalOpen(true)}
+              onOpenAddDevice={() => handleOpenAddDevice('', 'new')}
               onDeleteTenant={handleDeleteTenant}
+              onAddTenant={handleAddTenant}
               currentUser={currentUser}
             />
           )}
@@ -591,6 +640,7 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
               {/* Device Selector */}
               <DeviceSelector
                 devices={devices}
+                channels={channels}
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={(id) => {
                   setSelectedDeviceId(id);
@@ -599,7 +649,7 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
                 latestDataMap={latestDataMap}
                 viewMode={viewMode}
                 setViewMode={setViewMode}
-                onOpenAddDevice={() => setIsAddDeviceModalOpen(true)}
+                onOpenAddDevice={() => handleOpenAddDevice('', 'new')}
                 onDeleteDevice={handleDeleteDevice}
                 isAdmin={false}
               />
@@ -698,8 +748,9 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
           {activeTab === 'devices' && (
             <DevicesView
               devices={devices}
+              channels={channels}
               latestDataMap={latestDataMap}
-              onOpenAddDevice={() => setIsAddDeviceModalOpen(true)}
+              onOpenAddDevice={() => handleOpenAddDevice('', 'new')}
               onSelectDevice={(id) => setSelectedDeviceId(id)}
               onNavigateToDashboard={() => setActiveTab('dashboard')}
               onDeleteDevice={handleDeleteDevice}
@@ -712,9 +763,13 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
           {activeTab === 'channels' && (
             <ChannelsView
               channels={channels}
+              devices={devices}
               onOpenAddChannel={() => setIsAddChannelModalOpen(true)}
-              onOpenAddDevice={() => setIsAddDeviceModalOpen(true)}
+              onOpenAddDevice={(chanId) => handleOpenAddDevice(chanId, 'existing')}
+              onUnlinkDevice={handleUnlinkDevice}
               onDeleteChannel={handleDeleteChannel}
+              onSelectDevice={(id) => setSelectedDeviceId(id)}
+              onNavigateToDashboard={() => setActiveTab('dashboard')}
               isAdmin={false}
             />
           )}
@@ -731,10 +786,17 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
       {/* MODALS */}
       <AddDeviceModal
         isOpen={isAddDeviceModalOpen}
-        onClose={() => setIsAddDeviceModalOpen(false)}
+        onClose={() => {
+          setIsAddDeviceModalOpen(false);
+          setTargetChannelId('');
+        }}
         activeTenantId={activeTenant?.id}
         channels={channels}
+        devices={devices}
+        initialChannelId={targetChannelId}
+        initialMode={addDeviceInitialMode}
         onDeviceRegistered={handleDeviceRegistered}
+        onDeviceAssigned={handleDeviceAssigned}
       />
 
       <AddTenantModal

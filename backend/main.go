@@ -138,6 +138,7 @@ func main() {
 
 	// Device Registry
 	mux.HandleFunc("GET /api/v1/devices", api.GetDevices)
+	mux.HandleFunc("POST /api/v1/devices", api.AuthMiddleware(api.CreateDevice))
 
 	// Telemetry Queries, Export & Real-Time SSE Event Stream
 	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/latest", api.GetLatestTelemetry)
@@ -150,6 +151,8 @@ func main() {
 	mux.HandleFunc("POST /api/v1/telemetry", api.IngestTelemetry)
 
 	// Device Management & Provisioning
+	mux.HandleFunc("PATCH /api/v1/devices/{id}", api.AuthMiddleware(api.UpdateDevice))
+	mux.HandleFunc("PUT /api/v1/devices/{id}", api.AuthMiddleware(api.UpdateDevice))
 	mux.HandleFunc("POST /api/v1/devices/{id}/token", api.AuthMiddleware(api.RegenerateDeviceToken))
 	mux.HandleFunc("DELETE /api/v1/devices/{id}", api.AuthMiddleware(api.DeleteDevice))
 	mux.HandleFunc("POST /api/v1/devices/reset", api.AuthMiddleware(api.ResetDevices))
@@ -232,6 +235,7 @@ func main() {
 				"POST /api/v1/channels",
 				"DELETE /api/v1/channels/{id} (Protected)",
 				"GET  /api/v1/devices",
+				"POST /api/v1/devices (Protected)",
 				"GET  /api/v1/devices/{id}/telemetry/latest",
 				"GET  /api/v1/devices/{id}/telemetry/history",
 				"POST /api/v1/devices/{id}/telemetry",

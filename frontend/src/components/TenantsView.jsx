@@ -14,8 +14,10 @@ import {
   Phone, 
   Calendar,
   Filter,
-  Crown
+  Crown,
+  Sparkles
 } from 'lucide-react';
+import { generateUUID } from '../utils/generators';
 import { fetchUsers } from '../api';
 
 export default function TenantsView({
@@ -25,6 +27,7 @@ export default function TenantsView({
   onOpenAddTenant,
   onOpenAddDevice,
   onDeleteTenant,
+  onAddTenant,
   currentUser,
   devicesCountByTenant = {},
 }) {
@@ -32,6 +35,36 @@ export default function TenantsView({
   const [viewTab, setViewTab] = useState('workspaces'); // 'workspaces' or 'users'
   const [userList, setUserList] = useState([]);
   const [selectedUserFilter, setSelectedUserFilter] = useState('ALL');
+
+  // Inline first workspace creation state
+  const [newWsName, setNewWsName] = useState('');
+  const [newWsSlug, setNewWsSlug] = useState('');
+  const [newWsDesc, setNewWsDesc] = useState('');
+  const [isCreatingFirst, setIsCreatingFirst] = useState(false);
+
+  const hasWorkspace = Array.isArray(tenants) && tenants.length > 0;
+
+  const handleCreateFirstWorkspace = async (e) => {
+    e.preventDefault();
+    if (!newWsName.trim() || !onAddTenant) return;
+    setIsCreatingFirst(true);
+    try {
+      await onAddTenant({
+        id: generateUUID(),
+        name: newWsName.trim(),
+        slug: newWsSlug.trim() || 'ws-' + Math.random().toString(36).substring(2, 6),
+        description: newWsDesc.trim(),
+        created_at: new Date().toISOString(),
+      });
+      setNewWsName('');
+      setNewWsSlug('');
+      setNewWsDesc('');
+    } catch (err) {
+      console.error('Failed to create workspace:', err);
+    } finally {
+      setIsCreatingFirst(false);
+    }
+  };
 
   const isAdmin = currentUser?.role === 'admin';
 
@@ -88,13 +121,15 @@ export default function TenantsView({
 
         <div className="flex items-center gap-2.5">
           {!isAdmin ? (
-            <button
-              onClick={onOpenAddTenant}
-              className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition shadow-md shadow-emerald-500/20"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Create New Workspace</span>
-            </button>
+            hasWorkspace && (
+              <button
+                onClick={onOpenAddTenant}
+                className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs flex items-center gap-2 transition shadow-md shadow-emerald-500/20"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Create New Workspace</span>
+              </button>
+            )
           ) : (
             <div className="px-3.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1.5 shadow-xs">
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
@@ -195,15 +230,103 @@ export default function TenantsView({
       {viewTab === 'workspaces' && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredTenants.length === 0 ? (
-            <div className="col-span-full py-12 text-center bg-white rounded-2xl border border-slate-200 p-8 space-y-3">
-              <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
-              <h3 className="text-sm font-bold text-slate-800">No workspaces found</h3>
-              <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                {selectedUserFilter !== 'ALL'
-                  ? 'No workspaces found for the selected user.'
-                  : 'Click "Create New Workspace" above to add your first organizational workspace.'}
-              </p>
-            </div>
+            !isAdmin && !hasWorkspace ? (
+              <div className="col-span-full max-w-2xl mx-auto w-full py-4">
+                <div className="bg-white rounded-3xl border border-emerald-200/90 shadow-xl shadow-emerald-500/5 p-6 sm:p-8 space-y-6">
+                  <div className="flex items-start gap-4 pb-5 border-b border-slate-100">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-slate-950 font-bold shadow-md shadow-emerald-500/20 flex-shrink-0">
+                      <Building2 className="w-6 h-6 text-slate-950" />
+                    </div>
+                    <div>
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        <Sparkles className="w-3 h-3 text-emerald-600" />
+                        Step 1: Workspace Setup
+                      </span>
+                      <h3 className="text-xl font-extrabold text-slate-900 tracking-tight mt-1.5">
+                        Create Your Workspace to Get Started
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                        Welcome, <strong className="text-slate-800">{currentUser?.name || currentUser?.username}</strong>! Before you can register IoT devices or create tenants, please create your first workspace.
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleCreateFirstWorkspace} className="space-y-4">
+                    <div>
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5 block">
+                        Workspace Name <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newWsName}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setNewWsName(val);
+                          setNewWsSlug(val.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-'));
+                        }}
+                        placeholder="e.g. Smart Factory Zone 1"
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-emerald-500 font-medium transition"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5 block">
+                        Identifier Slug
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newWsSlug}
+                        onChange={(e) => setNewWsSlug(e.target.value)}
+                        placeholder="e.g. smart-factory-zone-1"
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2.5 text-xs font-mono text-emerald-700 focus:outline-none focus:border-emerald-500 transition"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5 block">
+                        Description (Optional)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={newWsDesc}
+                        onChange={(e) => setNewWsDesc(e.target.value)}
+                        placeholder="Primary workspace for IoT edge nodes and environmental telemetry."
+                        className="w-full bg-slate-50 border border-slate-300 rounded-xl px-4 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-500 transition"
+                      />
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        type="submit"
+                        disabled={isCreatingFirst || !newWsName.trim()}
+                        className="w-full py-3 px-5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-400 hover:from-emerald-400 hover:to-teal-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 transition shadow-md shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
+                      >
+                        <Building2 className="w-4 h-4 text-slate-950" />
+                        <span>{isCreatingFirst ? 'Creating Workspace...' : 'Create Workspace & Continue'}</span>
+                        <ArrowRight className="w-4 h-4 text-slate-950" />
+                      </button>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 text-[11px] flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                      <span>After creating your workspace, options to create additional tenants, register IoT devices, and stream telemetry will be unlocked.</span>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            ) : (
+              <div className="col-span-full py-12 text-center bg-white rounded-2xl border border-slate-200 p-8 space-y-3">
+                <Building2 className="w-10 h-10 text-slate-300 mx-auto" />
+                <h3 className="text-sm font-bold text-slate-800">No workspaces found</h3>
+                <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                  {selectedUserFilter !== 'ALL'
+                    ? 'No workspaces found for the selected user.'
+                    : 'Click "Create New Workspace" above to add your first organizational workspace.'}
+                </p>
+              </div>
+            )
           ) : (
             filteredTenants.map((t) => {
               const isSelected = activeTenant?.id === t.id;
@@ -243,20 +366,18 @@ export default function TenantsView({
                           </button>
                         )}
 
-                        {!isAdmin && tenants.length > 1 && (
-                          <button
+                        <button
                             onClick={(e) => {
                               e.stopPropagation();
                               if (window.confirm(`Delete workspace "${t.name}"? This will delete all devices, channels, and telemetry in this workspace.`)) {
                                 if (onDeleteTenant) onDeleteTenant(t.id);
                               }
                             }}
-                            className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                            className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
                             title="Delete Workspace"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
-                        )}
                       </div>
                     </div>
 
@@ -417,8 +538,8 @@ export default function TenantsView({
         </div>
       )}
 
-      {/* Quick Add Device Callout (Users only) */}
-      {!isAdmin && (
+      {/* Quick Add Device Callout (Users only - visible ONLY after workspace is created) */}
+      {!isAdmin && hasWorkspace && (
         <div className="rounded-2xl p-5 bg-gradient-to-r from-emerald-50 via-white to-slate-50 border border-emerald-200 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
           <div className="flex items-center gap-3">
             <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">

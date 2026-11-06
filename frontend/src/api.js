@@ -167,7 +167,9 @@ export async function fetchChannels(tenantId = '') {
     const url = tenantId 
       ? `${API_BASE_URL}/api/v1/channels?tenant_id=${encodeURIComponent(tenantId)}`
       : `${API_BASE_URL}/api/v1/channels`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.channels || [];
@@ -181,7 +183,7 @@ export async function createChannel(channelData) {
   try {
     const res = await fetch(`${API_BASE_URL}/api/v1/channels`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(channelData),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -206,6 +208,42 @@ export async function deleteChannel(channelId) {
   }
 }
 
+export async function createDevice(deviceData) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/devices`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(deviceData),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `Failed creating device (HTTP ${res.status})`);
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('[API] Failed creating device:', err);
+    throw err;
+  }
+}
+
+export async function updateDevice(deviceId, updateData) {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}`, {
+      method: 'PATCH',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(updateData),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `Failed updating device (HTTP ${res.status})`);
+    }
+    return await res.json();
+  } catch (err) {
+    console.error('[API] Failed updating device:', err);
+    throw err;
+  }
+}
+
 export async function fetchDevices(tenantId = '', channelId = '') {
   try {
     const params = new URLSearchParams();
@@ -213,7 +251,9 @@ export async function fetchDevices(tenantId = '', channelId = '') {
     if (channelId) params.append('channel_id', channelId);
     const queryString = params.toString();
     const url = queryString ? `${API_BASE_URL}/api/v1/devices?${queryString}` : `${API_BASE_URL}/api/v1/devices`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.devices || [];
