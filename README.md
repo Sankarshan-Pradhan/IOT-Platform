@@ -102,7 +102,7 @@ The platform provides flexible device management:
 - Pick any device in the top **Active Sensors** selector strip.
 - View **Live Metric Cards** (Temperature, Humidity, Heat Index with Min/Max).
 - Analyze **Interactive Charts** (continuous 5s updates + zero-latency SSE).
-- Toggle **Compare Mode** to evaluate two sensors side-by-side.
+- Toggle **Compare Mode** to evaluate two sensors side-by-side with synchronized historical telemetry downsampling and zero-latency SSE live updates.
 - Export sensor datasets to **CSV** or **JSON** with one click.
 
 ---
@@ -176,7 +176,7 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 ### 1. Two-Way Downlink Device Control & Actuation
 - **MQTT Topics:** Dispatches to `devices/{id}/commands`, receives ACKs on `devices/{id}/command_ack`.
 - **Supported Actions:**
-  - `set_relay`: Turn physical AC/DC equipment ON/OFF (`state: true | false`).
+  - `set_relay`: Turn physical AC/DC equipment ON/OFF (`state: true | false`) with direct GPIO 26 pin switching on hardware nodes.
   - `toggle_led`: Control onboard status LED.
   - `set_interval`: Adjust sensor sampling frequency remotely (1s to 60s).
   - `reboot`: Trigger remote microcontroller reboot via `ESP.restart()`.
@@ -205,7 +205,7 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 - **Formats:** Download CSV or JSON formatted history straight from the chart toolbar.
 
 ### 7. Over-the-Air (OTA) Updates & Device Provisioning
-- **Per-Device Auth Tokens:** Secure token generation and rotation endpoint `POST /api/v1/devices/{id}/token`.
+- **Per-Device Auth Tokens:** Secure token generation and rotation endpoint `POST /api/v1/devices/{id}/token` with synchronized 1-click clipboard copy from the operator dashboard.
 - **Binary Distribution:** Multipart `.bin` binary uploads, SHA-256 verification, and downlink OTA commands.
 
 ### 8. End-to-End Multi-Stage Containerization

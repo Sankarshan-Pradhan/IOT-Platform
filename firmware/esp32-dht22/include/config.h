@@ -27,7 +27,8 @@
 // Hardware Pinout
 #define DHT_PIN               4     // ESP32 GPIO connected to DHT22 DATA
 #define DHT_TYPE              DHT22
-#define STATUS_LED_PIN        2
+#define STATUS_LED_PIN        2     // Built-in status LED on ESP32 DevKit (GPIO 2)
+#define RELAY_PIN             26    // AC/DC Relay Module IN (Active HIGH)
 
 // Polling & Reconnect Settings
 #define PUBLISH_INTERVAL_MS   5000  // 5 seconds

@@ -25,7 +25,7 @@ import {
   triggerDeviceOTA 
 } from '../api';
 
-export default function DeviceControlPanel({ deviceId, activeDeviceName }) {
+export default function DeviceControlPanel({ deviceId, activeDeviceName, authToken }) {
   const [relayState, setRelayState] = useState(false);
   const [ledState, setLedState] = useState(false);
   const [samplingInterval, setSamplingInterval] = useState(5000);
@@ -36,6 +36,13 @@ export default function DeviceControlPanel({ deviceId, activeDeviceName }) {
   const [targetOtaVersion, setTargetOtaVersion] = useState('v1.1.0');
   const [tokenCopied, setTokenCopied] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
+  const [currentToken, setCurrentToken] = useState(authToken || '');
+
+  useEffect(() => {
+    if (authToken) {
+      setCurrentToken(authToken);
+    }
+  }, [authToken]);
 
   // Load recent command history for this device
   const loadCommands = useCallback(async () => {
@@ -102,21 +109,28 @@ export default function DeviceControlPanel({ deviceId, activeDeviceName }) {
   };
 
   const handleCopyToken = () => {
-    const dummyToken = `tok_${deviceId}_${Math.random().toString(16).substring(2, 10)}`;
-    navigator.clipboard.writeText(dummyToken);
+    const tokenToCopy = currentToken || authToken || `tok_${deviceId}_${Math.random().toString(16).substring(2, 10)}`;
+    navigator.clipboard.writeText(tokenToCopy);
     setTokenCopied(true);
+    setStatusMessage({
+      type: 'success',
+      text: `Auth token copied: ${tokenToCopy.substring(0, 16)}...`,
+    });
     setTimeout(() => setTokenCopied(false), 2500);
+    setTimeout(() => setStatusMessage(null), 3500);
   };
 
   const handleRotateToken = async () => {
     setIsLoading(true);
     try {
       const res = await regenerateDeviceToken(deviceId);
+      const newToken = res.auth_token;
+      setCurrentToken(newToken);
       setStatusMessage({
         type: 'success',
-        text: `Security token rotated: ${res.auth_token}`,
+        text: `Security token rotated: ${newToken}`,
       });
-      navigator.clipboard.writeText(res.auth_token);
+      navigator.clipboard.writeText(newToken);
       setTokenCopied(true);
       setTimeout(() => setTokenCopied(false), 3000);
       setTimeout(() => setStatusMessage(null), 5000);

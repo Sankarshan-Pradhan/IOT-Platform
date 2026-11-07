@@ -103,6 +103,10 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const selectedDeviceRef = useRef(selectedDeviceId);
   selectedDeviceRef.current = selectedDeviceId;
 
+  const secondDeviceId = devices.find((d) => d.device_id !== selectedDeviceId)?.device_id || '';
+  const secondDeviceRef = useRef(secondDeviceId);
+  secondDeviceRef.current = secondDeviceId;
+
   // Real-Time Server-Sent Events (SSE) Stream Subscriber
   useEffect(() => {
     const sseUrl = `${import.meta.env.VITE_API_URL || ''}/api/v1/telemetry/stream`;
@@ -138,6 +142,19 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
               payload: lt.payload,
             };
             setHistoryData((prev) => {
+              const updated = [...prev, newRecord];
+              return updated.length > limit ? updated.slice(updated.length - limit) : updated;
+            });
+          }
+
+          if (secondDeviceRef.current && lt.device_id === secondDeviceRef.current) {
+            const newRecord = {
+              time: lt.time || new Date().toISOString(),
+              tenant_id: lt.tenant_id,
+              device_id: lt.device_id,
+              payload: lt.payload,
+            };
+            setSecondDeviceHistory((prev) => {
               const updated = [...prev, newRecord];
               return updated.length > limit ? updated.slice(updated.length - limit) : updated;
             });
@@ -254,13 +271,21 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
         }
       }
 
-      // 6. Fetch Telemetry for Selected Device
-      const devId = selectedDeviceRef.current;
+      // 6. Fetch Telemetry for Selected Device & Compare Device
+      const devId = selectedDeviceRef.current || (Array.isArray(devList) && devList[0]?.device_id);
+      const compareDev = Array.isArray(devList) ? devList.find((d) => d.device_id !== devId) : null;
+      const compareDevId = compareDev?.device_id || '';
+
       if (devId) {
-        const [latest, hist] = await Promise.all([
+        const fetchPromises = [
           fetchLatestTelemetry(devId),
           fetchTelemetryHistory(devId, limit, 'ASC', resolution),
-        ]);
+        ];
+        if (compareDevId) {
+          fetchPromises.push(fetchTelemetryHistory(compareDevId, limit, 'ASC', resolution));
+        }
+
+        const [latest, hist, hist2] = await Promise.all(fetchPromises);
 
         if (latest) {
           setLatestDataMap((prev) => {
@@ -275,6 +300,11 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
         }
         if (Array.isArray(hist)) {
           setHistoryData(hist);
+        }
+        if (Array.isArray(hist2)) {
+          setSecondDeviceHistory(hist2);
+        } else if (!compareDevId) {
+          setSecondDeviceHistory([]);
         }
       }
 
@@ -498,8 +528,6 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const minHum = validHums.length > 0 ? Math.min(...validHums) : null;
   const maxHum = validHums.length > 0 ? Math.max(...validHums) : null;
 
-  const secondDeviceId = devices.find((d) => d.device_id !== selectedDeviceId)?.device_id || '';
-
   return (
     <div className="min-h-screen bg-slate-50 flex text-slate-900 antialiased selection:bg-emerald-500/20 selection:text-emerald-700">
       
@@ -704,6 +732,7 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
                   <DeviceControlPanel
                     deviceId={selectedDeviceId}
                     activeDeviceName={devices.find((d) => d.device_id === selectedDeviceId)?.name}
+                    authToken={devices.find((d) => d.device_id === selectedDeviceId)?.auth_token}
                   />
                 </>
               ) : (

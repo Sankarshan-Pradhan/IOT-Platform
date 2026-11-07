@@ -69,6 +69,10 @@ void setup() {
 
     pinMode(STATUS_LED_PIN, OUTPUT);
     digitalWrite(STATUS_LED_PIN, LOW);
+#ifdef RELAY_PIN
+    pinMode(RELAY_PIN, OUTPUT);
+    digitalWrite(RELAY_PIN, LOW);
+#endif
 
     // Format topic strings
     snprintf(telemetryTopic, sizeof(telemetryTopic), "%s/%s/telemetry", MQTT_TOPIC_PREFIX, DEVICE_ID);
@@ -246,7 +250,12 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
 
     if (strcmp(action, "set_relay") == 0) {
         relayState = doc["payload"]["state"] | false;
+#ifdef RELAY_PIN
+        digitalWrite(RELAY_PIN, relayState ? HIGH : LOW);
+        snprintf(resultMsg, sizeof(resultMsg), "Relay set to %s (GPIO %d)", relayState ? "ON" : "OFF", RELAY_PIN);
+#else
         snprintf(resultMsg, sizeof(resultMsg), "Relay set to %s", relayState ? "ON" : "OFF");
+#endif
         Serial.printf("[ACTUATION] %s\n", resultMsg);
         blinkLED(1, 150);
     } else if (strcmp(action, "toggle_led") == 0) {

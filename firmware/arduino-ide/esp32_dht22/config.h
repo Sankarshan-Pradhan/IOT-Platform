@@ -41,6 +41,7 @@
 #define DHT_PIN               4     // ESP32 GPIO connected to DHT22 DATA (Recommended: GPIO 4 or GPIO 22)
 #define DHT_TYPE              DHT22 // DHT22 / AM2302
 #define STATUS_LED_PIN        2     // Built-in status LED on ESP32 DevKit (GPIO 2)
+#define RELAY_PIN             26    // AC/DC Relay Module IN (GPIO 26, Active HIGH)
 
 // ------------------------------------------------------------------------------
 // 5. Intervals & Reconnect Backoff Configuration
