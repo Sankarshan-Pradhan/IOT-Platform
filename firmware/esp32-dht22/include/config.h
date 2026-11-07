@@ -6,19 +6,19 @@
 #define CONFIG_H
 
 // WiFi Credentials (Replace with your local Wi-Fi network before flashing)
-#define WIFI_SSID             "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD         "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID             "TeezashLabs_2G"
+#define WIFI_PASSWORD         "Teezash@22"
 
 // MQTT Broker
 #define MQTT_BROKER           "192.168.0.112"
 #define MQTT_PORT             1883
 
 // Authentication & Identity
-#define TENANT_ID             "4f39edef-66e5-47f9-afed-34d017a2bb5e"
-#define CHANNEL_ID            "chan-dht22-nse2w0"
-#define DEVICE_ID             "esp32-dht22-01"
-#define MQTT_USER             "esp32-dht22-01"
-#define MQTT_PASSWORD         "iot_sec_85daa459f8e18541f5a82b6d0155e400a625bc27"
+#define TENANT_ID             "c17c4bd8-e397-4b37-9acd-50501d60b282"
+#define CHANNEL_ID            "chan-iot-lab-ev8904"
+#define DEVICE_ID             "esp32-sensor-25"
+#define MQTT_USER             ""
+#define MQTT_PASSWORD         ""
 
 // MQTT Topics
 #define MQTT_TOPIC_PREFIX     "devices"

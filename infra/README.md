@@ -30,6 +30,15 @@ Containerized infrastructure for the IoT Platform. Manages the Eclipse Mosquitto
 | **Backend API** | `iot_backend` | `8080` | `8080` | Go REST server, native SSE streaming, downsampler, alert dispatchers |
 | **Frontend UI** | `iot_frontend` | `3000` | `80` | Production React 18 dashboard served via Nginx reverse proxy |
 
+### Container Orchestration & Dependency Ordering
+The root [`docker-compose.yml`](../docker-compose.yml) enforces explicit healthcheck and startup conditions:
+- **`iot_backend`** depends on:
+  - `postgres: condition: service_healthy` (via `pg_isready`)
+  - `mosquitto: condition: service_started`
+- **`iot_frontend`** depends on:
+  - `backend: condition: service_healthy` (via HTTP `/health` probe)
+- **Zero-Downtime Reconnection**: In addition to Docker Compose startup order, the Go backend runs an independent background retry worker every 5s to auto-reconnect if Mosquitto or TimescaleDB ever restart independently.
+
 ---
 
 ## 📁 Directory Layout

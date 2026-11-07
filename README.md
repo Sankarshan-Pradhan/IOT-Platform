@@ -211,7 +211,12 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 ### 8. End-to-End Multi-Stage Containerization
 - **Backend:** `golang:1.24-alpine` → `alpine:3.20` with integrated healthchecks.
 - **Frontend:** `node:20-alpine` → `nginx:alpine` with reverse proxy and SSE buffering disabled.
-- **Orchestration:** Single root [`docker-compose.yml`](docker-compose.yml).
+- **Orchestration:** Single root [`docker-compose.yml`](docker-compose.yml) managing explicit startup dependencies (`mosquitto: condition: service_started`, `postgres: condition: service_healthy`).
+
+### 9. Resilient MQTT Ingestion & Auto-Healing Worker
+- **Zero-Drop Auto-Reconnect:** The Go backend features an asynchronous 5-second health worker that continuously verifies broker connectivity via `MQTTService.IsConnected()`.
+- **Cold-Boot Fault Tolerance:** If Mosquitto boots after the backend or restarts dynamically, the worker automatically re-establishes the connection and re-subscribes to all telemetry channels.
+- **Unlimited Fleet Scaling:** Workspaces have **zero artificial device caps**. New hardware nodes streaming with your workspace tenant UUID automatically self-register on their first telemetry packet.
 
 ---
 
@@ -284,6 +289,25 @@ npm run dev
    pio device monitor -b 115200
    ```
 *(Arduino IDE users can open `firmware/arduino-ide/esp32_dht22/esp32_dht22.ino`)*.
+
+---
+
+## 💡 Troubleshooting & FAQ
+
+### 1. Why does my dashboard display "Paused" in the top bar?
+* The top navigation bar includes an interactive **Polling Controller**:
+  * `{isPolling ? 'Poll: 5s' : 'Paused'}`
+  * If the **Pause** icon was clicked, the 5-second countdown ticker stops.
+  * **Solution:** Click the green **Play (▶)** button in the header to resume live auto-polling.
+
+### 2. Can devices connect from a different Wi-Fi or across the internet?
+* In default local development, `config.h` points to your computer's local LAN IP (e.g. `192.168.x.x:1883`).
+* To stream telemetry from any Wi-Fi network globally:
+  1. Forward port `1883` using a tunnel tool (e.g. `ngrok tcp 1883`), or
+  2. Deploy the stack to a cloud VPS using the included `docker-compose.yml`.
+
+### 3. How many devices can a single workspace hold?
+* There is **no hardcoded device limit** per workspace. The PostgreSQL/TimescaleDB schema enforces only unique `(tenant_id, device_id)` pairs, supporting fleets of hundreds or thousands of concurrent nodes.
 
 ---
 

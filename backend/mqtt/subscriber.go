@@ -2,6 +2,7 @@ package mqtt
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -45,7 +46,17 @@ func NewMQTTService(brokerURL, clientID string, processor IngestionProcessor) *M
 	return svc
 }
 
+func (s *MQTTService) IsConnected() bool {
+	return s.client != nil && s.client.IsConnected()
+}
+
 func (s *MQTTService) Start() error {
+	if s.client == nil {
+		return fmt.Errorf("mqtt client not initialized")
+	}
+	if s.client.IsConnected() {
+		return nil
+	}
 	if token := s.client.Connect(); token.Wait() && token.Error() != nil {
 		return token.Error()
 	}

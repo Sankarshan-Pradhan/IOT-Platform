@@ -93,8 +93,21 @@ func main() {
 	mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, api)
 	api.SetMQTTPublisher(mqttSvc)
 	if err := mqttSvc.Start(); err != nil {
-		log.Printf("[MQTT] Notice: Broker not yet connected (%s): %v. Auto-reconnect is active.", cfg.MQTTBrokerURL, err)
+		log.Printf("[MQTT] Notice: Broker not yet connected (%s): %v. Auto-reconnect retry loop active.", cfg.MQTTBrokerURL, err)
 	}
+
+	// Background worker to auto-reconnect when Mosquitto starts/becomes available
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !mqttSvc.IsConnected() {
+				if err := mqttSvc.Start(); err == nil {
+					log.Printf("[MQTT] Successfully connected to broker: %s", cfg.MQTTBrokerURL)
+				}
+			}
+		}
+	}()
 
 	tryConnectDB := func() {
 		newDB, err := initDB(cfg)

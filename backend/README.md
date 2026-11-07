@@ -707,6 +707,14 @@ When a new device publishes telemetry for the first time:
 - The device's `updated_at` timestamp is updated with every incoming packet.
 - If the device disconnects abruptly, Mosquitto fires the configured **Last Will and Testament (LWT)** message to mark the device `offline`.
 
+### Resilient MQTT Auto-Reconnect Background Worker
+Under production container orchestration, the Mosquitto broker container may start slightly after or restart independently from the backend service. Eclipse Paho Go's native `AutoReconnect` only operates *after* an initial connection has been established; if the initial socket connection is refused on cold boot, Paho will not retry in the background.
+
+To guarantee complete zero-maintenance resilience:
+1. **Connection State Guard**: [`MQTTService.IsConnected()`](mqtt/subscriber.go) provides thread-safe visibility into the active broker socket status.
+2. **Background Reconnection Ticker**: [`main.go`](main.go) executes a non-blocking 5-second ticker goroutine. If the broker was temporarily unreachable at boot or restarted, the worker continuously retries `mqttSvc.Start()` until the connection is established.
+3. **Automatic Re-Subscription**: Upon successful connection or reconnection, `OnConnect` triggers automatically, resubscribing to all device telemetry topics (`devices/+/telemetry`, `channels/+/telemetry`, `devices/+/command_ack`).
+
 ---
 
 ## 🚀 Running the Backend
