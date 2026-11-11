@@ -483,7 +483,7 @@ func TestUserRegistrationAndUserScopedWorkspaces(t *testing.T) {
 		t.Fatalf("expected 200 OK on email login, got %d: %s", loginRec.Code, loginRec.Body.String())
 	}
 
-	// 3. User fetches their workspaces: should only see their own created workspace
+	// 3. User initially has 0 workspaces upon registration
 	userTenantsReq := httptest.NewRequest("GET", "/api/v1/tenants", nil)
 	userTenantsReq.Header.Set("Authorization", "Bearer "+userToken)
 	userTenantsRec := httptest.NewRecorder()
@@ -492,10 +492,36 @@ func TestUserRegistrationAndUserScopedWorkspaces(t *testing.T) {
 	var userTenantsRes map[string]interface{}
 	_ = json.Unmarshal(userTenantsRec.Body.Bytes(), &userTenantsRes)
 	tenantsList := userTenantsRes["tenants"].([]interface{})
-	if len(tenantsList) != 1 {
-		t.Fatalf("expected regular user to only see their 1 created workspace, got %d", len(tenantsList))
+	if len(tenantsList) != 0 {
+		t.Fatalf("expected regular user to initially have 0 workspaces, got %d", len(tenantsList))
 	}
-	firstWS := tenantsList[0].(map[string]interface{})
+
+	// 3b. User creates their first workspace via POST /api/v1/tenants
+	createWSPayload, _ := json.Marshal(models.Tenant{
+		Name: "Alexander Wright's Workspace",
+		Slug: "alex-workspace",
+	})
+	createWSReq := httptest.NewRequest("POST", "/api/v1/tenants", bytes.NewBuffer(createWSPayload))
+	createWSReq.Header.Set("Authorization", "Bearer "+userToken)
+	createWSRec := httptest.NewRecorder()
+	api.CreateTenant(createWSRec, createWSReq)
+	if createWSRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on workspace creation, got %d: %s", createWSRec.Code, createWSRec.Body.String())
+	}
+
+	// 3c. User fetches workspaces again: should now see 1 workspace
+	userTenantsRec2 := httptest.NewRecorder()
+	userTenantsReq2 := httptest.NewRequest("GET", "/api/v1/tenants", nil)
+	userTenantsReq2.Header.Set("Authorization", "Bearer "+userToken)
+	api.GetTenants(userTenantsRec2, userTenantsReq2)
+
+	var userTenantsRes2 map[string]interface{}
+	_ = json.Unmarshal(userTenantsRec2.Body.Bytes(), &userTenantsRes2)
+	tenantsList2 := userTenantsRes2["tenants"].([]interface{})
+	if len(tenantsList2) != 1 {
+		t.Fatalf("expected regular user to now see 1 created workspace, got %d", len(tenantsList2))
+	}
+	firstWS := tenantsList2[0].(map[string]interface{})
 	if firstWS["name"] != "Alexander Wright's Workspace" {
 		t.Fatalf("unexpected workspace name: %v", firstWS["name"])
 	}

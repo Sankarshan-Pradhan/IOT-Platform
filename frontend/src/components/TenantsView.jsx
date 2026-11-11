@@ -509,7 +509,7 @@ export default function TenantsView({
 
                       <td className="px-6 py-3.5">
                         <span className="font-bold text-slate-900">
-                          {user.workspaces_count ?? 1}
+                          {user.workspaces_count ?? 0}
                         </span>
                         <span className="text-slate-400 ml-1">workspaces</span>
                       </td>

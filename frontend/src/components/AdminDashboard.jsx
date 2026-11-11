@@ -562,7 +562,7 @@ export default function AdminDashboard({ currentUser, onLogout, onForwardToUser 
                               <div className="flex items-center gap-1.5">
                                 <Layers className="w-3.5 h-3.5 text-slate-400" />
                                 <span className="font-bold text-slate-900">
-                                  {user.workspaces_count ?? 1}
+                                  {user.workspaces_count ?? 0}
                                 </span>
                                 <span className="text-slate-400 text-[11px]">workspace(s)</span>
                               </div>
@@ -677,7 +677,7 @@ export default function AdminDashboard({ currentUser, onLogout, onForwardToUser 
                 </div>
                 <div className="flex items-center justify-between text-slate-600">
                   <span className="text-slate-400">Workspaces:</span>
-                  <span className="font-bold text-slate-900">{userToDeleteModal.workspaces_count ?? 1} owned</span>
+                  <span className="font-bold text-slate-900">{userToDeleteModal.workspaces_count ?? 0} owned</span>
                 </div>
               </div>
 

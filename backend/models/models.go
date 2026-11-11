@@ -127,7 +127,7 @@ type User struct {
 	Mobile          string    `json:"mobile"`
 	PasswordHash    string    `json:"-"`
 	Role            string    `json:"role"` // "admin" or "user"
-	WorkspacesCount int       `json:"workspaces_count,omitempty"`
+	WorkspacesCount int       `json:"workspaces_count"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }

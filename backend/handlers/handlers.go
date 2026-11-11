@@ -2209,24 +2209,8 @@ func (h *APIHandler) Register(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:    now,
 	}
 
-	// Automatically create a personal initial workspace for this user
-	wsID := fmt.Sprintf("ws-%x", b)
-	wsSlug := fmt.Sprintf("%s-workspace", username)
-	workspace := models.Tenant{
-		ID:          wsID,
-		Name:        fmt.Sprintf("%s's Workspace", name),
-		Slug:        wsSlug,
-		Description: fmt.Sprintf("Personal IoT workspace for %s.", name),
-		OwnerID:     userID,
-		OwnerName:   name,
-		OwnerEmail:  email,
-		CreatedAt:   now,
-		UpdatedAt:   now,
-	}
-
 	h.mu.Lock()
 	h.memUsers[userID] = user
-	h.memTenants[wsID] = workspace
 	h.mu.Unlock()
 
 	if h.isDBReady() {
@@ -2237,18 +2221,9 @@ func (h *APIHandler) Register(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[DB] Error inserting user: %v", err)
 		}
-
-		_, err = h.DB.Exec(`
-			INSERT INTO tenants (id, name, slug, description, owner_id, owner_name, owner_email, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			ON CONFLICT (slug) DO NOTHING;
-		`, workspace.ID, workspace.Name, workspace.Slug, workspace.Description, workspace.OwnerID, workspace.OwnerName, workspace.OwnerEmail, now, now)
-		if err != nil {
-			log.Printf("[DB] Error creating user default workspace: %v", err)
-		}
 	}
 
-	token, exp, err := h.GenerateJWT(user, workspace.ID, 24*time.Hour)
+	token, exp, err := h.GenerateJWT(user, "", 24*time.Hour)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to generate authentication token")
 		return
