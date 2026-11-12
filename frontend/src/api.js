@@ -7,12 +7,13 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 function getAuthHeaders() {
   const token = sessionStorage.getItem('iot_jwt_token') || localStorage.getItem('iot_jwt_token');
-  const apiKey = localStorage.getItem('iot_api_key') || 'iot_admin_secret_key_2026';
+  const apiKey = localStorage.getItem('iot_api_key');
   const headers = { 'Content-Type': 'application/json' };
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
+  } else if (apiKey) {
+    headers['X-API-Key'] = apiKey;
   }
-  headers['X-API-Key'] = apiKey;
   return headers;
 }
 
@@ -265,7 +266,9 @@ export async function fetchDevices(tenantId = '', channelId = '') {
 
 export async function fetchLatestTelemetry(deviceId) {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/latest`);
+    const res = await fetch(`${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/latest`, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) {
       if (res.status === 404) return null;
       throw new Error(`HTTP ${res.status}`);
@@ -281,7 +284,8 @@ export async function fetchLatestTelemetry(deviceId) {
 export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC', resolution = 'raw') {
   try {
     const res = await fetch(
-      `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}&resolution=${encodeURIComponent(resolution)}`
+      `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}&resolution=${encodeURIComponent(resolution)}`,
+      { headers: getAuthHeaders() }
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
@@ -320,6 +324,32 @@ export async function exportTelemetry(deviceId, format = 'csv') {
     console.error(`[API] Failed exporting telemetry for ${deviceId}:`, err);
     throw err;
   }
+}
+
+export async function fetchTelemetryStats() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/telemetry/stats`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn('[API] Could not fetch telemetry stats:', err);
+    return null;
+  }
+}
+
+export async function triggerTelemetryPrune(maxRecords = 10000) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/telemetry/prune`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ max_records: maxRecords }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.error || `Prune failed (HTTP ${res.status})`);
+  }
+  return await res.json();
 }
 
 export async function sendTelemetryHTTP(deviceId, payload) {
@@ -403,7 +433,7 @@ export async function resetAllDevices() {
 export async function fetchRules(tenantId = '') {
   try {
     const url = tenantId ? `${API_BASE_URL}/api/v1/rules?tenant_id=${encodeURIComponent(tenantId)}` : `${API_BASE_URL}/api/v1/rules`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.rules || [];
@@ -443,7 +473,7 @@ export async function fetchAlarms(tenantId = '', status = '', deviceId = '') {
     if (deviceId) params.append('device_id', deviceId);
     const qs = params.toString();
     const url = qs ? `${API_BASE_URL}/api/v1/alarms?${qs}` : `${API_BASE_URL}/api/v1/alarms`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.alarms || [];

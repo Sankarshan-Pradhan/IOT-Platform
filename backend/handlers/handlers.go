@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -49,6 +50,64 @@ type APIHandler struct {
 	sseBroker     *SSEBroker
 	memNotificationChannels map[string]NotificationChannel
 	memFirmwares  map[string]models.Firmware
+	maxTelemetryRecords     int
+	pruneIntervalSec        int
+	loginLimiter            *ipRateLimiter
+}
+
+type ipRateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newIPRateLimiter(limit int, window time.Duration) *ipRateLimiter {
+	return &ipRateLimiter{
+		attempts: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (rl *ipRateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	valid := make([]time.Time, 0, len(rl.attempts[ip]))
+	for _, t := range rl.attempts[ip] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) >= rl.limit {
+		rl.attempts[ip] = valid
+		return false
+	}
+
+	rl.attempts[ip] = append(valid, now)
+	return true
+}
+
+func getClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		return host
+	}
+	return ip
 }
 
 func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
@@ -147,6 +206,20 @@ func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
 		sseBroker:   NewSSEBroker(),
 		memNotificationChannels: make(map[string]NotificationChannel),
 		memFirmwares:            make(map[string]models.Firmware),
+		maxTelemetryRecords:     10000,
+		pruneIntervalSec:        30,
+		loginLimiter:            newIPRateLimiter(20, 1*time.Minute),
+	}
+
+	if envMax := os.Getenv("MAX_TELEMETRY_RECORDS"); envMax != "" {
+		if parsed, err := strconv.Atoi(envMax); err == nil && parsed > 0 {
+			h.maxTelemetryRecords = parsed
+		}
+	}
+	if envInterval := os.Getenv("TELEMETRY_PRUNE_INTERVAL_SEC"); envInterval != "" {
+		if parsed, err := strconv.Atoi(envInterval); err == nil && parsed > 0 {
+			h.pruneIntervalSec = parsed
+		}
 	}
 
 	if db != nil {
@@ -200,6 +273,33 @@ func (h *APIHandler) ensureSchemaMigrations() {
 
 		ALTER TABLE devices ADD COLUMN IF NOT EXISTS auth_token VARCHAR(128);
 		ALTER TABLE devices ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(64) DEFAULT 'v1.0.0';
+
+		CREATE INDEX IF NOT EXISTS idx_telemetry_time_created ON telemetry (time DESC, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS notification_channels (
+			id VARCHAR(64) PRIMARY KEY,
+			tenant_id VARCHAR(64) NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			type VARCHAR(32) NOT NULL DEFAULT 'webhook',
+			target_url TEXT NOT NULL,
+			severity VARCHAR(32) NOT NULL DEFAULT 'CRITICAL',
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_notification_channels_tenant ON notification_channels(tenant_id);
+
+		CREATE TABLE IF NOT EXISTS firmware_packages (
+			id VARCHAR(64) PRIMARY KEY,
+			version VARCHAR(64) NOT NULL,
+			device_type VARCHAR(64) NOT NULL DEFAULT 'ESP32',
+			filename VARCHAR(255) NOT NULL,
+			size_bytes BIGINT NOT NULL,
+			checksum_sha VARCHAR(128) NOT NULL,
+			description TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_firmware_version ON firmware_packages(version);
 	`)
 
 	adminHash, _ := bcrypt.GenerateFromPassword([]byte(h.AdminPassword), bcrypt.DefaultCost)
@@ -308,23 +408,56 @@ func (h *APIHandler) ValidateJWT(tokenStr string) (*models.JWTClaims, error) {
 }
 
 // getCaller extracts authenticated user claims from the incoming request.
+// User JWT credentials take strict precedence over any static API key.
 func (h *APIHandler) getCaller(r *http.Request) *models.JWTClaims {
-	tokenOrKey := r.Header.Get("X-API-Key")
-	if tokenOrKey == "" {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			tokenOrKey = strings.TrimPrefix(authHeader, "Bearer ")
-		} else {
-			tokenOrKey = authHeader
+	// 1. Check Authorization header first (Bearer <token>)
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" {
+		rawToken := strings.TrimSpace(authHeader)
+		if strings.HasPrefix(rawToken, "Bearer ") {
+			rawToken = strings.TrimSpace(strings.TrimPrefix(rawToken, "Bearer "))
+		}
+		if claims, err := h.ValidateJWT(rawToken); err == nil && claims != nil {
+			return claims
+		}
+		// Allow Admin API Key via Bearer header as well
+		if h.AdminAPIKey != "" && rawToken == h.AdminAPIKey {
+			return &models.JWTClaims{
+				Sub:      "usr-admin-system-001",
+				UserID:   "usr-admin-system-001",
+				Username: h.AdminUsername,
+				Name:     "System Administrator",
+				Role:     "admin",
+			}
 		}
 	}
 
-	if tokenOrKey == "" {
-		return nil
+	// 2. Check X-API-Key header second
+	apiKey := strings.TrimSpace(r.Header.Get("X-API-Key"))
+	if apiKey != "" {
+		if claims, err := h.ValidateJWT(apiKey); err == nil && claims != nil {
+			return claims
+		}
+		if h.AdminAPIKey != "" && apiKey == h.AdminAPIKey {
+			return &models.JWTClaims{
+				Sub:      "usr-admin-system-001",
+				UserID:   "usr-admin-system-001",
+				Username: h.AdminUsername,
+				Name:     "System Administrator",
+				Role:     "admin",
+			}
+		}
 	}
 
-	// Static Admin API Key check
-	if h.AdminAPIKey != "" && tokenOrKey == h.AdminAPIKey {
+	// 3. Check query parameters (?token=... or ?api_key=... for SSE EventSource)
+	qToken := strings.TrimSpace(r.URL.Query().Get("token"))
+	if qToken != "" {
+		if claims, err := h.ValidateJWT(qToken); err == nil && claims != nil {
+			return claims
+		}
+	}
+	qKey := strings.TrimSpace(r.URL.Query().Get("api_key"))
+	if qKey != "" && h.AdminAPIKey != "" && qKey == h.AdminAPIKey {
 		return &models.JWTClaims{
 			Sub:      "usr-admin-system-001",
 			UserID:   "usr-admin-system-001",
@@ -334,10 +467,6 @@ func (h *APIHandler) getCaller(r *http.Request) *models.JWTClaims {
 		}
 	}
 
-	claims, err := h.ValidateJWT(tokenOrKey)
-	if err == nil && claims != nil {
-		return claims
-	}
 	return nil
 }
 
@@ -351,6 +480,76 @@ func (h *APIHandler) AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// userOwnsTenant checks whether the authenticated caller has ownership of the given tenant workspace.
+func (h *APIHandler) userOwnsTenant(caller *models.JWTClaims, tenantID string) bool {
+	if caller == nil || tenantID == "" {
+		return false
+	}
+	if caller.Role == "admin" {
+		return true
+	}
+	if h.isDBReady() {
+		var ownerID, ownerEmail string
+		err := h.DB.QueryRow(
+			"SELECT COALESCE(owner_id, ''), COALESCE(owner_email, '') FROM tenants WHERE id::text = $1 OR slug = $1",
+			tenantID,
+		).Scan(&ownerID, &ownerEmail)
+		if err == nil {
+			if (ownerID == caller.UserID || ownerID == caller.Username) && ownerID != "" {
+				return true
+			}
+			if caller.Email != "" && ownerEmail == caller.Email {
+				return true
+			}
+		}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for tid, t := range h.memTenants {
+		if tid == tenantID || t.Slug == tenantID {
+			if (t.OwnerID == caller.UserID || t.OwnerID == caller.Username) && t.OwnerID != "" {
+				return true
+			}
+			if caller.Email != "" && t.OwnerEmail == caller.Email {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getUserTenantIDs returns all tenant IDs accessible to the caller.
+func (h *APIHandler) getUserTenantIDs(caller *models.JWTClaims) []string {
+	if caller == nil {
+		return nil
+	}
+	ids := make([]string, 0)
+	if h.isDBReady() {
+		rows, err := h.DB.Query(
+			"SELECT id::text FROM tenants WHERE owner_id = $1 OR owner_id = $2 OR (owner_email != '' AND owner_email = $3)",
+			caller.UserID, caller.Username, caller.Email,
+		)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var tid string
+				if err := rows.Scan(&tid); err == nil && tid != "" {
+					ids = append(ids, tid)
+				}
+			}
+			return ids
+		}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for tid, t := range h.memTenants {
+		if (t.OwnerID == caller.UserID || t.OwnerID == caller.Username || (caller.Email != "" && t.OwnerEmail == caller.Email)) && t.OwnerID != "" {
+			ids = append(ids, tid)
+		}
+	}
+	return ids
 }
 
 // resolveDevice finds a device by either internal UUID or business device_id
@@ -405,13 +604,15 @@ func (h *APIHandler) resolveDevice(identifier string) (*models.Device, error) {
 // Admin sees ALL workspaces across all users (or filters by owner_id/user_id); regular users only see their own workspaces.
 func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 	caller := h.getCaller(r)
-	isAdmin := caller != nil && caller.Role == "admin"
-	callerID := ""
-	callerUsername := ""
-	if caller != nil {
-		callerID = caller.UserID
-		callerUsername = caller.Username
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to view workspaces")
+		return
 	}
+
+	isAdmin := caller.Role == "admin"
+	callerID := caller.UserID
+	callerUsername := caller.Username
+	callerEmail := caller.Email
 
 	filterOwner := strings.TrimSpace(r.URL.Query().Get("owner_id"))
 	if filterOwner == "" {
@@ -423,35 +624,38 @@ func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 		var rows *sql.Rows
 		var err error
 
-		if isAdmin && filterOwner != "" {
-			query = `
-				SELECT id, name, slug, COALESCE(description, ''), 
-				       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
-				       created_at, updated_at 
-				FROM tenants 
-				WHERE owner_id = $1 OR owner_id = $2 OR owner_name = $1 OR owner_email = $1
-				ORDER BY created_at ASC;
-			`
-			rows, err = h.DB.Query(query, filterOwner, filterOwner)
-		} else if isAdmin || caller == nil {
-			query = `
-				SELECT id, name, slug, COALESCE(description, ''), 
-				       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
-				       created_at, updated_at 
-				FROM tenants 
-				ORDER BY created_at ASC;
-			`
-			rows, err = h.DB.Query(query)
+		if isAdmin {
+			if filterOwner != "" {
+				query = `
+					SELECT id, name, slug, COALESCE(description, ''), 
+					       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
+					       created_at, updated_at 
+					FROM tenants 
+					WHERE owner_id = $1 OR owner_id = $2 OR owner_name = $1 OR owner_email = $1
+					ORDER BY created_at ASC;
+				`
+				rows, err = h.DB.Query(query, filterOwner, filterOwner)
+			} else {
+				query = `
+					SELECT id, name, slug, COALESCE(description, ''), 
+					       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
+					       created_at, updated_at 
+					FROM tenants 
+					ORDER BY created_at ASC;
+				`
+				rows, err = h.DB.Query(query)
+			}
 		} else {
+			// Regular user: strictly restrict to caller's own identity
 			query = `
 				SELECT id, name, slug, COALESCE(description, ''), 
 				       COALESCE(owner_id, ''), COALESCE(owner_name, ''), COALESCE(owner_email, ''),
 				       created_at, updated_at 
 				FROM tenants 
-				WHERE owner_id = $1 OR owner_id = $2
+				WHERE owner_id = $1 OR owner_id = $2 OR (owner_email != '' AND owner_email = $3)
 				ORDER BY created_at ASC;
 			`
-			rows, err = h.DB.Query(query, callerID, callerUsername)
+			rows, err = h.DB.Query(query, callerID, callerUsername, callerEmail)
 		}
 
 		if err == nil {
@@ -476,14 +680,18 @@ func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.RUnlock()
 	tenants := make([]models.Tenant, 0)
 	for _, t := range h.memTenants {
-		if isAdmin && filterOwner != "" {
-			if t.OwnerID == filterOwner || t.OwnerName == filterOwner || t.OwnerEmail == filterOwner {
+		if isAdmin {
+			if filterOwner != "" {
+				if t.OwnerID == filterOwner || t.OwnerName == filterOwner || t.OwnerEmail == filterOwner {
+					tenants = append(tenants, t)
+				}
+			} else {
 				tenants = append(tenants, t)
 			}
-		} else if isAdmin || caller == nil {
-			tenants = append(tenants, t)
-		} else if t.OwnerID == callerID || t.OwnerID == callerUsername {
-			tenants = append(tenants, t)
+		} else {
+			if t.OwnerID == callerID || t.OwnerID == callerUsername || (callerEmail != "" && t.OwnerEmail == callerEmail) {
+				tenants = append(tenants, t)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -495,6 +703,10 @@ func (h *APIHandler) GetTenants(w http.ResponseWriter, r *http.Request) {
 // CreateTenant handles POST /api/v1/tenants
 func (h *APIHandler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to create a workspace")
+		return
+	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil || len(bodyBytes) == 0 {
 		writeError(w, http.StatusBadRequest, "Invalid or empty request body")
@@ -525,27 +737,21 @@ func (h *APIHandler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		t.Slug = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(t.Name), " ", "-"))
 	}
 
-	if caller != nil {
-		if caller.Role == "admin" && t.OwnerID != "" {
-			// Keep specified OwnerID if administrator is creating on behalf of a user
-			if t.OwnerName == "" {
-				t.OwnerName = caller.Name
-			}
-			if t.OwnerEmail == "" {
-				t.OwnerEmail = caller.Email
-			}
-		} else {
-			t.OwnerID = caller.UserID
+	if caller.Role == "admin" && t.OwnerID != "" {
+		// Keep specified OwnerID if administrator is creating on behalf of a user
+		if t.OwnerName == "" {
 			t.OwnerName = caller.Name
-			if t.OwnerName == "" {
-				t.OwnerName = caller.Username
-			}
+		}
+		if t.OwnerEmail == "" {
 			t.OwnerEmail = caller.Email
 		}
 	} else {
-		t.OwnerID = "usr-admin-system-001"
-		t.OwnerName = "System Administrator"
-		t.OwnerEmail = "admin@iot-platform.local"
+		t.OwnerID = caller.UserID
+		t.OwnerName = caller.Name
+		if t.OwnerName == "" {
+			t.OwnerName = caller.Username
+		}
+		t.OwnerEmail = caller.Email
 	}
 
 	t.CreatedAt = time.Now().UTC()
@@ -586,6 +792,10 @@ func (h *APIHandler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 // DeleteTenant handles DELETE /api/v1/tenants/{id}
 func (h *APIHandler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Tenant ID is required in URL path")
@@ -593,28 +803,12 @@ func (h *APIHandler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Permission guard: regular users can only delete their own workspaces
-	if caller != nil && caller.Role != "admin" {
-		isOwner := false
+	if caller.Role != "admin" {
 		if id == "a0000000-0000-0000-0000-000000000001" || id == "default-org" {
-			isOwner = true
-		} else if h.isDBReady() {
-			var ownerID string
-			_ = h.DB.QueryRow("SELECT COALESCE(owner_id, '') FROM tenants WHERE id::text = $1 OR slug = $1", id).Scan(&ownerID)
-			if ownerID == caller.UserID || ownerID == caller.Username || ownerID == "" || ownerID == "usr-admin-system-001" {
-				isOwner = true
-			}
-		} else {
-			h.mu.RLock()
-			for tid, t := range h.memTenants {
-				if (tid == id || t.Slug == id) && (t.OwnerID == caller.UserID || t.OwnerID == caller.Username || t.OwnerID == "" || t.OwnerID == "usr-admin-system-001") {
-					isOwner = true
-					break
-				}
-			}
-			h.mu.RUnlock()
+			writeError(w, http.StatusForbidden, "Forbidden: default organization workspace cannot be deleted")
+			return
 		}
-
-		if !isOwner {
+		if !h.userOwnsTenant(caller, id) {
 			writeError(w, http.StatusForbidden, "Forbidden: you can only delete workspaces you created")
 			return
 		}
@@ -651,18 +845,73 @@ func (h *APIHandler) DeleteTenant(w http.ResponseWriter, r *http.Request) {
 
 // GetChannels handles GET /api/v1/channels
 func (h *APIHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to view channels")
+		return
+	}
+
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	var userTenantMap map[string]bool
+	if caller.Role != "admin" {
+		userTenantIDs := h.getUserTenantIDs(caller)
+		userTenantMap = make(map[string]bool)
+		for _, tid := range userTenantIDs {
+			userTenantMap[tid] = true
+		}
+		if tenantID != "" {
+			if !userTenantMap[tenantID] {
+				writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view channels in this workspace")
+				return
+			}
+		} else if len(userTenantIDs) == 0 {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"count":    0,
+				"channels": []models.Channel{},
+			})
+			return
+		}
+	}
 
 	if h.isDBReady() {
-		query := `
-			SELECT c.id, c.tenant_id, c.name, c.group_name, c.topic, COALESCE(c.description, ''),
-			       (SELECT COUNT(*) FROM devices d WHERE d.channel_id = c.id) AS devices_count,
-			       c.created_at, c.updated_at
-			FROM channels c
-			WHERE ($1 = '' OR c.tenant_id::text = $1)
-			ORDER BY c.created_at ASC;
-		`
-		rows, err := h.DB.Query(query, tenantID)
+		var query string
+		var rows *sql.Rows
+		var err error
+
+		if caller.Role == "admin" {
+			query = `
+				SELECT c.id, c.tenant_id, c.name, c.group_name, c.topic, COALESCE(c.description, ''),
+				       (SELECT COUNT(*) FROM devices d WHERE d.channel_id = c.id) AS devices_count,
+				       c.created_at, c.updated_at
+				FROM channels c
+				WHERE ($1 = '' OR c.tenant_id::text = $1)
+				ORDER BY c.created_at ASC;
+			`
+			rows, err = h.DB.Query(query, tenantID)
+		} else if tenantID != "" {
+			query = `
+				SELECT c.id, c.tenant_id, c.name, c.group_name, c.topic, COALESCE(c.description, ''),
+				       (SELECT COUNT(*) FROM devices d WHERE d.channel_id = c.id) AS devices_count,
+				       c.created_at, c.updated_at
+				FROM channels c
+				WHERE c.tenant_id::text = $1
+				ORDER BY c.created_at ASC;
+			`
+			rows, err = h.DB.Query(query, tenantID)
+		} else {
+			query = `
+				SELECT c.id, c.tenant_id, c.name, c.group_name, c.topic, COALESCE(c.description, ''),
+				       (SELECT COUNT(*) FROM devices d WHERE d.channel_id = c.id) AS devices_count,
+				       c.created_at, c.updated_at
+				FROM channels c
+				WHERE c.tenant_id IN (
+					SELECT id FROM tenants WHERE owner_id = $1 OR owner_id = $2 OR (owner_email != '' AND owner_email = $3)
+				)
+				ORDER BY c.created_at ASC;
+			`
+			rows, err = h.DB.Query(query, caller.UserID, caller.Username, caller.Email)
+		}
+
 		if err == nil {
 			defer rows.Close()
 			channels := make([]models.Channel, 0)
@@ -685,6 +934,11 @@ func (h *APIHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.RUnlock()
 	channels := make([]models.Channel, 0)
 	for _, ch := range h.memChannels {
+		if caller.Role != "admin" {
+			if !userTenantMap[ch.TenantID] {
+				continue
+			}
+		}
 		if tenantID != "" && ch.TenantID != tenantID {
 			continue
 		}
@@ -705,6 +959,11 @@ func (h *APIHandler) GetChannels(w http.ResponseWriter, r *http.Request) {
 
 // CreateChannel handles POST /api/v1/channels
 func (h *APIHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to create a channel")
+		return
+	}
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil || len(bodyBytes) == 0 {
 		writeError(w, http.StatusBadRequest, "Invalid or empty request body")
@@ -725,6 +984,11 @@ func (h *APIHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 
 	if ch.TenantID == "" {
 		ch.TenantID = "a0000000-0000-0000-0000-000000000001"
+	}
+
+	if caller.Role != "admin" && !h.userOwnsTenant(caller, ch.TenantID) {
+		writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to create channels in this workspace")
+		return
 	}
 
 	if ch.ID == "" {
@@ -771,10 +1035,32 @@ func (h *APIHandler) CreateChannel(w http.ResponseWriter, r *http.Request) {
 
 // DeleteChannel handles DELETE /api/v1/channels/{id}
 func (h *APIHandler) DeleteChannel(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Channel ID is required in URL path")
 		return
+	}
+
+	if caller.Role != "admin" {
+		var chanTenantID string
+		if h.isDBReady() {
+			_ = h.DB.QueryRow("SELECT COALESCE(tenant_id::text, '') FROM channels WHERE id = $1", id).Scan(&chanTenantID)
+		} else {
+			h.mu.RLock()
+			if ch, ok := h.memChannels[id]; ok {
+				chanTenantID = ch.TenantID
+			}
+			h.mu.RUnlock()
+		}
+		if chanTenantID != "" && !h.userOwnsTenant(caller, chanTenantID) {
+			writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to delete this channel")
+			return
+		}
 	}
 
 	h.mu.Lock()
@@ -831,6 +1117,16 @@ func (h *APIHandler) CreateDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.TenantID == "" {
 		d.TenantID = "a0000000-0000-0000-0000-000000000001"
+	}
+
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to register a device")
+		return
+	}
+	if caller.Role != "admin" && !h.userOwnsTenant(caller, d.TenantID) {
+		writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to register devices in this workspace")
+		return
 	}
 	if d.DeviceType == "" {
 		d.DeviceType = "ESP32 + DHT22"
@@ -1017,22 +1313,81 @@ func (h *APIHandler) UpdateDevice(w http.ResponseWriter, r *http.Request) {
 
 // GetDevices handles GET /api/v1/devices
 func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	channelID := r.URL.Query().Get("channel_id")
-	status := r.URL.Query().Get("status")
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to view devices")
+		return
+	}
+
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	channelID := strings.TrimSpace(r.URL.Query().Get("channel_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+
+	var userTenantMap map[string]bool
+	if caller.Role != "admin" {
+		userTenantIDs := h.getUserTenantIDs(caller)
+		userTenantMap = make(map[string]bool)
+		for _, tid := range userTenantIDs {
+			userTenantMap[tid] = true
+		}
+
+		if tenantID != "" {
+			if !userTenantMap[tenantID] {
+				writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view devices in this workspace")
+				return
+			}
+		} else if len(userTenantIDs) == 0 {
+			// Regular user has no workspaces, returns 0 devices
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"count":   0,
+				"devices": []models.Device{},
+			})
+			return
+		}
+	}
 
 	if h.isDBReady() {
-		query := `
-			SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, 
-			       COALESCE(auth_token, ''), COALESCE(firmware_version, 'v1.0.0'), metadata, created_at, updated_at
-			FROM devices
-			WHERE ($1 = '' OR tenant_id::text = $1)
-			  AND ($2 = '' OR channel_id = $2)
-			  AND ($3 = '' OR status = $3)
-			ORDER BY created_at DESC;
-		`
+		var rows *sql.Rows
+		var err error
 
-		rows, err := h.DB.Query(query, tenantID, channelID, status)
+		if caller.Role == "admin" {
+			query := `
+				SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, 
+				       COALESCE(auth_token, ''), COALESCE(firmware_version, 'v1.0.0'), metadata, created_at, updated_at
+				FROM devices
+				WHERE ($1 = '' OR tenant_id::text = $1)
+				  AND ($2 = '' OR channel_id = $2)
+				  AND ($3 = '' OR status = $3)
+				ORDER BY created_at DESC;
+			`
+			rows, err = h.DB.Query(query, tenantID, channelID, status)
+		} else if tenantID != "" {
+			query := `
+				SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, 
+				       COALESCE(auth_token, ''), COALESCE(firmware_version, 'v1.0.0'), metadata, created_at, updated_at
+				FROM devices
+				WHERE tenant_id::text = $1
+				  AND ($2 = '' OR channel_id = $2)
+				  AND ($3 = '' OR status = $3)
+				ORDER BY created_at DESC;
+			`
+			rows, err = h.DB.Query(query, tenantID, channelID, status)
+		} else {
+			// Regular user without tenant filter: scope to all caller-owned tenants
+			query := `
+				SELECT id, tenant_id, COALESCE(channel_id::text, ''), device_id, name, device_type, status, 
+				       COALESCE(auth_token, ''), COALESCE(firmware_version, 'v1.0.0'), metadata, created_at, updated_at
+				FROM devices
+				WHERE tenant_id IN (
+					SELECT id FROM tenants WHERE owner_id = $1 OR owner_id = $2 OR (owner_email != '' AND owner_email = $3)
+				)
+				  AND ($4 = '' OR channel_id = $4)
+				  AND ($5 = '' OR status = $5)
+				ORDER BY created_at DESC;
+			`
+			rows, err = h.DB.Query(query, caller.UserID, caller.Username, caller.Email, channelID, status)
+		}
+
 		if err == nil {
 			defer rows.Close()
 			devices := make([]models.Device, 0)
@@ -1054,37 +1409,6 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-
-		// Fallback query if columns do not exist
-		fallbackQuery := `
-			SELECT id, tenant_id, device_id, name, device_type, status, metadata, created_at, updated_at
-			FROM devices
-			WHERE ($1 = '' OR tenant_id::text = $1)
-			  AND ($2 = '' OR status = $2)
-			ORDER BY created_at DESC;
-		`
-		rows, err = h.DB.Query(fallbackQuery, tenantID, status)
-		if err == nil {
-			defer rows.Close()
-			devices := make([]models.Device, 0)
-			for rows.Next() {
-				var d models.Device
-				var metadataBytes []byte
-				if err := rows.Scan(
-					&d.ID, &d.TenantID, &d.DeviceID, &d.Name, &d.DeviceType, &d.Status,
-					&metadataBytes, &d.CreatedAt, &d.UpdatedAt,
-				); err == nil {
-					d.Metadata = json.RawMessage(metadataBytes)
-					d.FirmwareVersion = "v1.0.0"
-					devices = append(devices, d)
-				}
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"count":   len(devices),
-				"devices": devices,
-			})
-			return
-		}
 		log.Printf("[Warning] Database query failed, using in-memory fallback: %v", err)
 	}
 
@@ -1093,6 +1417,11 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.RUnlock()
 	devices := make([]models.Device, 0)
 	for _, d := range h.memDevices {
+		if caller.Role != "admin" {
+			if !userTenantMap[d.TenantID] {
+				continue
+			}
+		}
 		if tenantID != "" && d.TenantID != tenantID {
 			continue
 		}
@@ -1113,14 +1442,24 @@ func (h *APIHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
 
 // GetLatestTelemetry handles GET /api/v1/devices/{id}/telemetry/latest
 func (h *APIHandler) GetLatestTelemetry(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
 		return
 	}
 
+	device, err := h.resolveDevice(id)
+	if err == nil && caller.Role != "admin" && !h.userOwnsTenant(caller, device.TenantID) {
+		writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view telemetry for this device")
+		return
+	}
+
 	if h.isDBReady() {
-		device, err := h.resolveDevice(id)
 		if err == nil {
 			query := `
 				SELECT tenant_id, device_id, time, payload, updated_at
@@ -1281,9 +1620,20 @@ func downsampleRecords(records []models.TelemetryRecord, resolution string) []mo
 
 // GetTelemetryHistory handles GET /api/v1/devices/{id}/telemetry/history
 func (h *APIHandler) GetTelemetryHistory(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+
+	device, err := h.resolveDevice(id)
+	if err == nil && caller.Role != "admin" && !h.userOwnsTenant(caller, device.TenantID) {
+		writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view telemetry for this device")
 		return
 	}
 
@@ -1703,10 +2053,27 @@ func (h *APIHandler) IngestTelemetry(w http.ResponseWriter, r *http.Request) {
 
 // DeleteDevice handles DELETE /api/v1/devices/{id}
 func (h *APIHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
 		return
+	}
+
+	if caller.Role != "admin" {
+		dev, err := h.resolveDevice(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "Device not found")
+			return
+		}
+		if !h.userOwnsTenant(caller, dev.TenantID) {
+			writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to delete this device")
+			return
+		}
 	}
 
 	h.mu.Lock()
@@ -1729,6 +2096,12 @@ func (h *APIHandler) DeleteDevice(w http.ResponseWriter, r *http.Request) {
 
 // ResetDevices handles POST /api/v1/devices/reset
 func (h *APIHandler) ResetDevices(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil || caller.Role != "admin" {
+		writeError(w, http.StatusForbidden, "Forbidden: administrator privileges required to reset platform devices")
+		return
+	}
+
 	h.mu.Lock()
 	h.memDevices = make(map[string]models.Device)
 	h.memLatest = make(map[string]models.LatestTelemetry)
@@ -1745,6 +2118,227 @@ func (h *APIHandler) ResetDevices(w http.ResponseWriter, r *http.Request) {
 		"status":  "success",
 		"message": "All devices and telemetry reset successfully",
 	})
+}
+
+// SetTelemetryRetention updates the global maximum telemetry records and background prune interval.
+func (h *APIHandler) SetTelemetryRetention(maxRecords, pruneIntervalSec int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if maxRecords > 0 {
+		h.maxTelemetryRecords = maxRecords
+	}
+	if pruneIntervalSec > 0 {
+		h.pruneIntervalSec = pruneIntervalSec
+	}
+}
+
+// GetMaxTelemetryRecords returns the maximum telemetry records allowed globally (default: 10,000).
+func (h *APIHandler) GetMaxTelemetryRecords() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.maxTelemetryRecords <= 0 {
+		return 10000
+	}
+	return h.maxTelemetryRecords
+}
+
+// GetPruneIntervalSec returns the retention worker interval in seconds (default: 30s).
+func (h *APIHandler) GetPruneIntervalSec() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.pruneIntervalSec <= 0 {
+		return 30
+	}
+	return h.pruneIntervalSec
+}
+
+// PruneOldTelemetry removes older telemetry records from the database and in-memory cache
+// when total records exceed maxRecords, keeping strictly the newest maxRecords.
+func (h *APIHandler) PruneOldTelemetry(maxRecords int) (int64, error) {
+	if maxRecords <= 0 {
+		maxRecords = h.GetMaxTelemetryRecords()
+	}
+
+	var totalDeleted int64
+
+	// 1. Persistent Database Pruning (TimescaleDB / PostgreSQL)
+	if h.isDBReady() {
+		var cutoffTime time.Time
+		var cutoffCreatedAt time.Time
+
+		// Query the boundary timestamp of the maxRecords-th newest record (0-indexed offset = maxRecords - 1)
+		err := h.DB.QueryRow(`
+			SELECT time, created_at
+			FROM telemetry
+			ORDER BY time DESC, created_at DESC
+			OFFSET $1 LIMIT 1;
+		`, maxRecords-1).Scan(&cutoffTime, &cutoffCreatedAt)
+
+		if err != nil {
+			if err != sql.ErrNoRows {
+				return totalDeleted, fmt.Errorf("failed checking telemetry retention cutoff: %w", err)
+			}
+			// When err == sql.ErrNoRows, total records <= maxRecords; nothing to prune in DB.
+		} else {
+			// Delete all rows strictly older than the cutoff boundary
+			res, delErr := h.DB.Exec(`
+				DELETE FROM telemetry
+				WHERE time < $1 OR (time = $1 AND created_at < $2);
+			`, cutoffTime, cutoffCreatedAt)
+			if delErr != nil {
+				return totalDeleted, fmt.Errorf("failed deleting old telemetry: %w", delErr)
+			}
+			deletedCount, _ := res.RowsAffected()
+			totalDeleted += deletedCount
+		}
+	}
+
+	// 2. In-Memory Cache Pruning (Resilient Standalone Mode)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	totalMemRecords := 0
+	for _, records := range h.memHistory {
+		totalMemRecords += len(records)
+	}
+
+	if totalMemRecords > maxRecords {
+		type recordRef struct {
+			devID string
+			time  time.Time
+			rec   models.TelemetryRecord
+		}
+		allRecs := make([]recordRef, 0, totalMemRecords)
+		for devID, recs := range h.memHistory {
+			for _, r := range recs {
+				allRecs = append(allRecs, recordRef{devID: devID, time: r.Time, rec: r})
+			}
+		}
+
+		// Sort newest to oldest
+		sort.Slice(allRecs, func(i, j int) bool {
+			return allRecs[i].time.After(allRecs[j].time)
+		})
+
+		// Keep only the newest maxRecords
+		keptRecs := allRecs[:maxRecords]
+		excess := int64(totalMemRecords - maxRecords)
+
+		// Rebuild memHistory grouped by devID while maintaining original chronological order
+		newMemHistory := make(map[string][]models.TelemetryRecord)
+		for devID := range h.memDevices {
+			newMemHistory[devID] = make([]models.TelemetryRecord, 0)
+		}
+		// Iterate keptRecs in reverse (oldest of kept to newest) so append preserves chronological order
+		for i := len(keptRecs) - 1; i >= 0; i-- {
+			r := keptRecs[i]
+			newMemHistory[r.devID] = append(newMemHistory[r.devID], r.rec)
+		}
+		h.memHistory = newMemHistory
+		totalDeleted += excess
+	}
+
+	return totalDeleted, nil
+}
+
+// PruneTelemetryHTTP handles POST /api/v1/telemetry/prune
+func (h *APIHandler) PruneTelemetryHTTP(w http.ResponseWriter, r *http.Request) {
+	maxRecords := h.GetMaxTelemetryRecords()
+
+	if r.Body != nil && r.ContentLength > 0 {
+		var req struct {
+			MaxRecords int `json:"max_records"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.MaxRecords > 0 {
+			maxRecords = req.MaxRecords
+		}
+	}
+
+	pruned, err := h.PruneOldTelemetry(maxRecords)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Pruning failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":         "success",
+		"message":        fmt.Sprintf("Pruned %d older telemetry records exceeding %d limit", pruned, maxRecords),
+		"pruned_records": pruned,
+		"max_records":    maxRecords,
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// GetTelemetryStats handles GET /api/v1/telemetry/stats
+func (h *APIHandler) GetTelemetryStats(w http.ResponseWriter, r *http.Request) {
+	stats := map[string]interface{}{
+		"max_records":        h.GetMaxTelemetryRecords(),
+		"prune_interval_sec": h.GetPruneIntervalSec(),
+	}
+
+	if h.isDBReady() {
+		var total int64
+		var oldest, newest sql.NullTime
+
+		err := h.DB.QueryRow(`
+			SELECT COUNT(*), MIN(time), MAX(time)
+			FROM telemetry;
+		`).Scan(&total, &oldest, &newest)
+
+		if err == nil {
+			stats["total_records"] = total
+			if oldest.Valid {
+				stats["oldest_record_time"] = oldest.Time.Format(time.RFC3339)
+			} else {
+				stats["oldest_record_time"] = nil
+			}
+			if newest.Valid {
+				stats["newest_record_time"] = newest.Time.Format(time.RFC3339)
+			} else {
+				stats["newest_record_time"] = nil
+			}
+			stats["storage_mode"] = "timescaledb"
+			writeJSON(w, http.StatusOK, stats)
+			return
+		}
+	}
+
+	// In-memory stats fallback
+	h.mu.RLock()
+	total := 0
+	var oldest, newest time.Time
+	hasRecords := false
+
+	for _, records := range h.memHistory {
+		total += len(records)
+		for _, r := range records {
+			if !hasRecords {
+				oldest = r.Time
+				newest = r.Time
+				hasRecords = true
+			} else {
+				if r.Time.Before(oldest) {
+					oldest = r.Time
+				}
+				if r.Time.After(newest) {
+					newest = r.Time
+				}
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	stats["total_records"] = total
+	stats["storage_mode"] = "in-memory"
+	if hasRecords {
+		stats["oldest_record_time"] = oldest.Format(time.RFC3339)
+		stats["newest_record_time"] = newest.Format(time.RFC3339)
+	} else {
+		stats["oldest_record_time"] = nil
+		stats["newest_record_time"] = nil
+	}
+
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // ProcessCommandAck handles incoming MQTT command acknowledgment from hardware
@@ -1819,6 +2413,85 @@ func (h *APIHandler) AcknowledgeCommandHTTP(w http.ResponseWriter, r *http.Reque
 		"status":  "success",
 		"message": "Command acknowledgment registered",
 	})
+}
+
+// ProcessDeviceStatus updates device online/offline status in memory, in TimescaleDB, and broadcasts via SSE.
+func (h *APIHandler) ProcessDeviceStatus(tenantID, deviceID, status string) error {
+	if deviceID == "" {
+		return fmt.Errorf("device_id is required")
+	}
+
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status != "online" && status != "offline" {
+		status = "offline"
+	}
+	now := time.Now().UTC()
+
+	h.mu.Lock()
+	dev, exists := h.memDevices[deviceID]
+	if exists {
+		dev.Status = status
+		dev.UpdatedAt = now
+		h.memDevices[deviceID] = dev
+	}
+	h.mu.Unlock()
+
+	if h.isDBReady() {
+		_, _ = h.DB.Exec(`
+			UPDATE devices
+			SET status = $1, updated_at = $2
+			WHERE device_id = $3 OR id::text = $3;
+		`, status, now, deviceID)
+	}
+
+	if h.sseBroker != nil {
+		h.sseBroker.Broadcast("device_status", map[string]interface{}{
+			"device_id":  deviceID,
+			"status":     status,
+			"updated_at": now.Format(time.RFC3339),
+		})
+	}
+
+	return nil
+}
+
+// CheckStaleDevices marks devices as offline if they have not sent telemetry for timeout.
+func (h *APIHandler) CheckStaleDevices(timeout time.Duration) (int, error) {
+	now := time.Now().UTC()
+	cutoff := now.Add(-timeout)
+	staleDeviceIDs := make([]string, 0)
+
+	if h.isDBReady() {
+		rows, err := h.DB.Query(`
+			SELECT device_id
+			FROM devices
+			WHERE status = 'online' AND updated_at < $1;
+		`, cutoff)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var devID string
+				if err := rows.Scan(&devID); err == nil {
+					staleDeviceIDs = append(staleDeviceIDs, devID)
+				}
+			}
+		}
+	} else {
+		h.mu.RLock()
+		for id, dev := range h.memDevices {
+			if dev.Status == "online" && dev.UpdatedAt.Before(cutoff) {
+				staleDeviceIDs = append(staleDeviceIDs, id)
+			}
+		}
+		h.mu.RUnlock()
+	}
+
+	for _, devID := range staleDeviceIDs {
+		_ = h.ProcessDeviceStatus("", devID, "offline")
+		log.Printf("[HEARTBEAT] Device %s marked offline (no telemetry for >%v)", devID, timeout)
+	}
+
+	return len(staleDeviceIDs), nil
 }
 
 // SendCommand handles POST /api/v1/devices/{id}/commands
@@ -2245,6 +2918,15 @@ func (h *APIHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce IP-based rate limiting on authentication attempts
+	if h.loginLimiter != nil {
+		clientIP := getClientIP(r)
+		if !h.loginLimiter.allow(clientIP) {
+			writeError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait 1 minute before trying again.")
+			return
+		}
+	}
+
 	var req models.LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
@@ -2564,7 +3246,24 @@ func (h *APIHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 // GetRules handles GET /api/v1/rules
 func (h *APIHandler) GetRules(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to view guardrail rules")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	if caller.Role != "admin" {
+		if tenantID != "" && !h.userOwnsTenant(caller, tenantID) {
+			writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view rules for this workspace")
+			return
+		}
+		if tenantID == "" {
+			userTenants := h.getUserTenantIDs(caller)
+			if len(userTenants) > 0 {
+				tenantID = userTenants[0]
+			}
+		}
+	}
 	if tenantID == "" {
 		tenantID = "a0000000-0000-0000-0000-000000000001"
 	}
@@ -2693,9 +3392,27 @@ func (h *APIHandler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 
 // GetAlarms handles GET /api/v1/alarms
 func (h *APIHandler) GetAlarms(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to view alarms")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
 	statusFilter := r.URL.Query().Get("status")
 	deviceID := r.URL.Query().Get("device_id")
+
+	if caller.Role != "admin" {
+		if tenantID != "" && !h.userOwnsTenant(caller, tenantID) {
+			writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to view alarms for this workspace")
+			return
+		}
+		if tenantID == "" {
+			userTenants := h.getUserTenantIDs(caller)
+			if len(userTenants) > 0 {
+				tenantID = userTenants[0]
+			}
+		}
+	}
 
 	if tenantID == "" {
 		tenantID = "a0000000-0000-0000-0000-000000000001"

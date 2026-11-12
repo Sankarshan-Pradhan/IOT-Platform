@@ -23,12 +23,15 @@ import {
   AlertCircle,
   Mail,
   Phone,
-  ExternalLink
+  ExternalLink,
+  HardDrive
 } from 'lucide-react';
 import { 
   fetchHealth, 
   fetchUsers, 
-  deleteUser
+  deleteUser,
+  fetchTelemetryStats,
+  triggerTelemetryPrune
 } from '../api';
 
 export default function AdminDashboard({ currentUser, onLogout, onForwardToUser }) {
@@ -46,6 +49,8 @@ export default function AdminDashboard({ currentUser, onLogout, onForwardToUser 
   const [health, setHealth] = useState(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [copiedId, setCopiedId] = useState(null);
+  const [telemetryStats, setTelemetryStats] = useState(null);
+  const [isPruning, setIsPruning] = useState(false);
 
   const handleCopy = (text) => {
     navigator.clipboard.writeText(text);
@@ -53,18 +58,33 @@ export default function AdminDashboard({ currentUser, onLogout, onForwardToUser 
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const handlePruneTelemetry = async () => {
+    setIsPruning(true);
+    try {
+      await triggerTelemetryPrune(10000);
+      const s = await fetchTelemetryStats();
+      if (s) setTelemetryStats(s);
+    } catch (err) {
+      console.warn('[AdminDashboard] Prune failed:', err);
+    } finally {
+      setIsPruning(false);
+    }
+  };
+
   // Load Admin System Data (Manual or on Mount — NO 5-second auto-polling)
   const loadAdminData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      // Fetch system health and users concurrently in a single batch
-      const [h, users] = await Promise.all([
+      // Fetch system health, users, and telemetry stats concurrently in a single batch
+      const [h, users, stats] = await Promise.all([
         fetchHealth(),
         fetchUsers(),
+        fetchTelemetryStats(),
       ]);
 
       if (h) setHealth(h);
       if (Array.isArray(users)) setUserList(users);
+      if (stats) setTelemetryStats(stats);
     } catch (err) {
       console.warn('[AdminDashboard] Error loading admin data:', err);
     } finally {
@@ -267,6 +287,25 @@ export default function AdminDashboard({ currentUser, onLogout, onForwardToUser 
                   {isDbOk ? 'Ready' : 'Waiting'}
                 </span>
               </div>
+
+              {/* Telemetry Storage Meter (10,000 Records Cap) */}
+              {telemetryStats && (
+                <div className="h-8 px-2.5 rounded-lg bg-slate-100 border border-slate-200 text-xs font-medium inline-flex items-center gap-1.5 flex-shrink-0">
+                  <HardDrive className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="hidden sm:inline text-slate-500">Storage:</span>
+                  <span className="font-semibold text-slate-800">
+                    {(telemetryStats.total_records || 0).toLocaleString()} / {(telemetryStats.max_records || 10000).toLocaleString()}
+                  </span>
+                  <button
+                    onClick={handlePruneTelemetry}
+                    disabled={isPruning}
+                    title="Prune older records to 10,000 cap"
+                    className="ml-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors disabled:opacity-50"
+                  >
+                    {isPruning ? '...' : 'Prune'}
+                  </button>
+                </div>
+              )}
 
               {/* Manual Refresh Button (Clipped icon, zero layout movement on click) */}
               <button

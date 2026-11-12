@@ -16,7 +16,16 @@ import (
 func TestGetTenants(t *testing.T) {
 	api := NewAPIHandler(nil, "test_secret_key")
 
+	// Unauthenticated request should fail with 401
+	unauthReq := httptest.NewRequest("GET", "/api/v1/tenants", nil)
+	unauthRec := httptest.NewRecorder()
+	api.GetTenants(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 for unauthenticated GetTenants, got %d", unauthRec.Code)
+	}
+
 	req := httptest.NewRequest("GET", "/api/v1/tenants", nil)
+	req.Header.Set("X-API-Key", "test_secret_key")
 	rec := httptest.NewRecorder()
 
 	api.GetTenants(rec, req)
@@ -46,6 +55,7 @@ func TestCreateTenant(t *testing.T) {
 	body, _ := json.Marshal(payload)
 
 	req := httptest.NewRequest("POST", "/api/v1/tenants", bytes.NewBuffer(body))
+	req.Header.Set("X-API-Key", "test_secret_key")
 	rec := httptest.NewRecorder()
 
 	api.CreateTenant(rec, req)
@@ -78,6 +88,7 @@ func TestGetAndCreateChannels(t *testing.T) {
 
 	// 1. Get default channels
 	getReq := httptest.NewRequest("GET", "/api/v1/channels", nil)
+	getReq.Header.Set("X-API-Key", "test_secret_key")
 	getRec := httptest.NewRecorder()
 	api.GetChannels(getRec, getReq)
 
@@ -94,6 +105,7 @@ func TestGetAndCreateChannels(t *testing.T) {
 	}
 	chBody, _ := json.Marshal(chPayload)
 	createReq := httptest.NewRequest("POST", "/api/v1/channels", bytes.NewBuffer(chBody))
+	createReq.Header.Set("X-API-Key", "test_secret_key")
 	createRec := httptest.NewRecorder()
 	api.CreateChannel(createRec, createReq)
 
@@ -125,6 +137,7 @@ func TestDeviceTelemetryLifecycle(t *testing.T) {
 
 	// 2. Verify device is present in registry
 	devReq := httptest.NewRequest("GET", "/api/v1/devices", nil)
+	devReq.Header.Set("X-API-Key", "test_secret_key")
 	devRec := httptest.NewRecorder()
 	api.GetDevices(devRec, devReq)
 
@@ -141,6 +154,7 @@ func TestDeviceTelemetryLifecycle(t *testing.T) {
 	// 3. Fetch latest telemetry
 	latestReq := httptest.NewRequest("GET", "/api/v1/devices/esp32-test-node/telemetry/latest", nil)
 	latestReq.SetPathValue("id", "esp32-test-node")
+	latestReq.Header.Set("X-API-Key", "test_secret_key")
 	latestRec := httptest.NewRecorder()
 
 	api.GetLatestTelemetry(latestRec, latestReq)
@@ -152,6 +166,7 @@ func TestDeviceTelemetryLifecycle(t *testing.T) {
 	// 4. Fetch telemetry history
 	histReq := httptest.NewRequest("GET", "/api/v1/devices/esp32-test-node/telemetry/history?limit=10&order=ASC", nil)
 	histReq.SetPathValue("id", "esp32-test-node")
+	histReq.Header.Set("X-API-Key", "test_secret_key")
 	histRec := httptest.NewRecorder()
 
 	api.GetTelemetryHistory(histRec, histReq)
@@ -231,6 +246,7 @@ func TestDeleteTenantAndChannel(t *testing.T) {
 
 	// 1. Create and delete tenant
 	createTenantReq := httptest.NewRequest("POST", "/api/v1/tenants", bytes.NewBuffer([]byte(`{"name": "Temporary Workspace"}`)))
+	createTenantReq.Header.Set("X-API-Key", "test_secret_key")
 	createTenantRec := httptest.NewRecorder()
 	api.CreateTenant(createTenantRec, createTenantReq)
 
@@ -241,6 +257,7 @@ func TestDeleteTenantAndChannel(t *testing.T) {
 
 	delTenantReq := httptest.NewRequest("DELETE", "/api/v1/tenants/"+tenantID, nil)
 	delTenantReq.SetPathValue("id", tenantID)
+	delTenantReq.Header.Set("X-API-Key", "test_secret_key")
 	delTenantRec := httptest.NewRecorder()
 	api.DeleteTenant(delTenantRec, delTenantReq)
 
@@ -250,6 +267,7 @@ func TestDeleteTenantAndChannel(t *testing.T) {
 
 	// 2. Create and delete channel
 	createChanReq := httptest.NewRequest("POST", "/api/v1/channels", bytes.NewBuffer([]byte(`{"name": "Temporary Channel"}`)))
+	createChanReq.Header.Set("X-API-Key", "test_secret_key")
 	createChanRec := httptest.NewRecorder()
 	api.CreateChannel(createChanRec, createChanReq)
 
@@ -260,6 +278,7 @@ func TestDeleteTenantAndChannel(t *testing.T) {
 
 	delChanReq := httptest.NewRequest("DELETE", "/api/v1/channels/"+channelID, nil)
 	delChanReq.SetPathValue("id", channelID)
+	delChanReq.Header.Set("X-API-Key", "test_secret_key")
 	delChanRec := httptest.NewRecorder()
 	api.DeleteChannel(delChanRec, delChanReq)
 
@@ -337,6 +356,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 
 	// 1. Initial state: verify default overheat rule exists (temperature_c > 35.0)
 	rulesReq := httptest.NewRequest("GET", "/api/v1/rules", nil)
+	rulesReq.Header.Set("X-API-Key", "test_admin_key")
 	rulesRec := httptest.NewRecorder()
 	api.GetRules(rulesRec, rulesReq)
 
@@ -351,6 +371,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 	}
 
 	alarmsReq := httptest.NewRequest("GET", "/api/v1/alarms?device_id=test-node-safe", nil)
+	alarmsReq.Header.Set("X-API-Key", "test_admin_key")
 	alarmsRec := httptest.NewRecorder()
 	api.GetAlarms(alarmsRec, alarmsReq)
 
@@ -367,6 +388,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 	}
 
 	hotAlarmsReq := httptest.NewRequest("GET", "/api/v1/alarms?device_id=test-node-hot&status=OPEN", nil)
+	hotAlarmsReq.Header.Set("X-API-Key", "test_admin_key")
 	hotAlarmsRec := httptest.NewRecorder()
 	api.GetAlarms(hotAlarmsRec, hotAlarmsReq)
 
@@ -390,6 +412,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 	// 4. Acknowledge alarm
 	ackReq := httptest.NewRequest("POST", "/api/v1/alarms/"+alarmID+"/acknowledge", nil)
 	ackReq.SetPathValue("id", alarmID)
+	ackReq.Header.Set("X-API-Key", "test_admin_key")
 	ackRec := httptest.NewRecorder()
 	api.AcknowledgeAlarm(ackRec, ackReq)
 
@@ -406,6 +429,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 		"severity":  "WARNING",
 	})
 	createRuleReq := httptest.NewRequest("POST", "/api/v1/rules", bytes.NewBuffer(customRuleJSON))
+	createRuleReq.Header.Set("X-API-Key", "test_admin_key")
 	createRuleRec := httptest.NewRecorder()
 	api.CreateRule(createRuleRec, createRuleReq)
 
@@ -418,6 +442,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", "test-node-humid", time.Now().UTC(), humPayload)
 
 	humAlarmsReq := httptest.NewRequest("GET", "/api/v1/alarms?device_id=test-node-humid&status=OPEN", nil)
+	humAlarmsReq.Header.Set("X-API-Key", "test_admin_key")
 	humAlarmsRec := httptest.NewRecorder()
 	api.GetAlarms(humAlarmsRec, humAlarmsReq)
 
@@ -432,6 +457,7 @@ func TestGuardrailRuleEvaluation(t *testing.T) {
 	_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", "test-node-humid", time.Now().UTC(), normalHumPayload)
 
 	resolvedAlarmsReq := httptest.NewRequest("GET", "/api/v1/alarms?device_id=test-node-humid&status=RESOLVED", nil)
+	resolvedAlarmsReq.Header.Set("X-API-Key", "test_admin_key")
 	resolvedAlarmsRec := httptest.NewRecorder()
 	api.GetAlarms(resolvedAlarmsRec, resolvedAlarmsReq)
 
@@ -762,6 +788,7 @@ func TestContinuousAggregatesAndDownsampling(t *testing.T) {
 	// 1. Query raw telemetry
 	rawReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/history?resolution=raw", nil)
 	rawReq.SetPathValue("id", devID)
+	rawReq.Header.Set("X-API-Key", "test_secret_key")
 	rawRec := httptest.NewRecorder()
 	api.GetTelemetryHistory(rawRec, rawReq)
 	if rawRec.Code != http.StatusOK {
@@ -776,6 +803,7 @@ func TestContinuousAggregatesAndDownsampling(t *testing.T) {
 	// 2. Query 1-minute downsampled continuous aggregate
 	downReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/history?resolution=1m", nil)
 	downReq.SetPathValue("id", devID)
+	downReq.Header.Set("X-API-Key", "test_secret_key")
 	downRec := httptest.NewRecorder()
 	api.GetTelemetryHistory(downRec, downReq)
 	if downRec.Code != http.StatusOK {
@@ -808,6 +836,7 @@ func TestTelemetryExport(t *testing.T) {
 	// 1. Export as CSV
 	csvReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/export?format=csv", nil)
 	csvReq.SetPathValue("id", devID)
+	csvReq.Header.Set("X-API-Key", "test_secret_key")
 	csvRec := httptest.NewRecorder()
 	api.ExportTelemetry(csvRec, csvReq)
 
@@ -825,6 +854,7 @@ func TestTelemetryExport(t *testing.T) {
 	// 2. Export as JSON
 	jsonReq := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/export?format=json", nil)
 	jsonReq.SetPathValue("id", devID)
+	jsonReq.Header.Set("X-API-Key", "test_secret_key")
 	jsonRec := httptest.NewRecorder()
 	api.ExportTelemetry(jsonRec, jsonReq)
 
@@ -876,5 +906,293 @@ func TestDeviceProvisioningAndOTA(t *testing.T) {
 	}
 	if !strings.Contains(string(pub.lastPayload), "ota_update") || !strings.Contains(string(pub.lastPayload), "v1.2.0") {
 		t.Fatalf("expected payload to contain ota_update and v1.2.0, got %s", string(pub.lastPayload))
+	}
+}
+
+func TestTelemetryRetentionAndPruning(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	dev1 := "node-retention-01"
+	dev2 := "node-retention-02"
+
+	// 1. Configure Retention Policy with max 5 records
+	api.SetTelemetryRetention(5, 30)
+	if api.GetMaxTelemetryRecords() != 5 {
+		t.Fatalf("expected maxTelemetryRecords=5, got %d", api.GetMaxTelemetryRecords())
+	}
+	if api.GetPruneIntervalSec() != 30 {
+		t.Fatalf("expected pruneIntervalSec=30, got %d", api.GetPruneIntervalSec())
+	}
+
+	baseTime := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+
+	// 2. Ingest 10 records (5 for dev1, 5 for dev2) with incrementing timestamps
+	for i := 1; i <= 5; i++ {
+		t1 := baseTime.Add(time.Duration(i*2) * time.Minute)
+		payload1 := []byte(fmt.Sprintf(`{"temperature_c": %f}`, float64(20+i)))
+		if err := api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", dev1, t1, payload1); err != nil {
+			t.Fatalf("failed ingesting for dev1: %v", err)
+		}
+
+		t2 := baseTime.Add(time.Duration(i*2+1) * time.Minute)
+		payload2 := []byte(fmt.Sprintf(`{"temperature_c": %f}`, float64(30+i)))
+		if err := api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", dev2, t2, payload2); err != nil {
+			t.Fatalf("failed ingesting for dev2: %v", err)
+		}
+	}
+
+	// 3. Verify total records is 10 before prune
+	statsReq := httptest.NewRequest("GET", "/api/v1/telemetry/stats", nil)
+	statsRec := httptest.NewRecorder()
+	api.GetTelemetryStats(statsRec, statsReq)
+	if statsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on GetTelemetryStats, got %d", statsRec.Code)
+	}
+	var statsRes map[string]interface{}
+	_ = json.Unmarshal(statsRec.Body.Bytes(), &statsRes)
+	if statsRes["total_records"].(float64) != 10 {
+		t.Fatalf("expected 10 total records before pruning, got %v", statsRes["total_records"])
+	}
+
+	// 4. Run PruneOldTelemetry(5)
+	pruned, err := api.PruneOldTelemetry(5)
+	if err != nil {
+		t.Fatalf("unexpected error pruning telemetry: %v", err)
+	}
+	if pruned != 5 {
+		t.Fatalf("expected 5 pruned records, got %d", pruned)
+	}
+
+	// 5. Verify total records is now 5
+	statsRec2 := httptest.NewRecorder()
+	api.GetTelemetryStats(statsRec2, statsReq)
+	_ = json.Unmarshal(statsRec2.Body.Bytes(), &statsRes)
+	if statsRes["total_records"].(float64) != 5 {
+		t.Fatalf("expected exactly 5 records remaining after pruning, got %v", statsRes["total_records"])
+	}
+
+	// 6. Running prune again when count <= max should prune 0 records
+	prunedAgain, err := api.PruneOldTelemetry(5)
+	if err != nil {
+		t.Fatalf("unexpected error on second prune: %v", err)
+	}
+	if prunedAgain != 0 {
+		t.Fatalf("expected 0 pruned records when table <= max, got %d", prunedAgain)
+	}
+
+	// 7. Test HTTP prune endpoint: Ingest 3 more records
+	for i := 6; i <= 8; i++ {
+		tNew := baseTime.Add(time.Duration(i*3) * time.Minute)
+		payload := []byte(fmt.Sprintf(`{"temperature_c": %f}`, float64(40+i)))
+		_ = api.ProcessTelemetry("a0000000-0000-0000-0000-000000000001", "", dev1, tNew, payload)
+	}
+
+	pruneReq := httptest.NewRequest("POST", "/api/v1/telemetry/prune", bytes.NewBuffer([]byte(`{"max_records": 5}`)))
+	pruneRec := httptest.NewRecorder()
+	api.PruneTelemetryHTTP(pruneRec, pruneReq)
+	if pruneRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on PruneTelemetryHTTP, got %d: %s", pruneRec.Code, pruneRec.Body.String())
+	}
+
+	var pruneRes map[string]interface{}
+	_ = json.Unmarshal(pruneRec.Body.Bytes(), &pruneRes)
+	if pruneRes["pruned_records"].(float64) != 3 {
+		t.Fatalf("expected 3 pruned records via HTTP endpoint, got %v", pruneRes["pruned_records"])
+	}
+}
+
+func TestLoginRateLimiting(t *testing.T) {
+	api := NewAPIHandler(nil, "test_secret_key")
+	api.loginLimiter = newIPRateLimiter(3, 1*time.Minute)
+
+	loginBody := []byte(`{"username":"admin","password":"wrongpassword"}`)
+
+	// First 3 requests should reach handler logic (returns 401 Unauthorized for wrong password)
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewBuffer(loginBody))
+		req.RemoteAddr = "192.168.1.100:12345"
+		rec := httptest.NewRecorder()
+		api.Login(rec, req)
+
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d was unexpectedly rate limited", i+1)
+		}
+	}
+
+	// 4th request must be rate limited with 429 Too Many Requests
+	req := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewBuffer(loginBody))
+	req.RemoteAddr = "192.168.1.100:12345"
+	rec := httptest.NewRecorder()
+	api.Login(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests on 4th attempt, got %d", rec.Code)
+	}
+
+	// Different IP should still be allowed
+	reqDiff := httptest.NewRequest("POST", "/api/v1/auth/login", bytes.NewBuffer(loginBody))
+	reqDiff.RemoteAddr = "192.168.1.101:12345"
+	recDiff := httptest.NewRecorder()
+	api.Login(recDiff, reqDiff)
+
+	if recDiff.Code == http.StatusTooManyRequests {
+		t.Fatalf("different IP should not be rate limited")
+	}
+}
+
+// TestSecurityFix_JWTPriorityOverAdminKey validates that a regular user's JWT token
+// cannot be accidentally or maliciously elevated by passing an X-API-Key header.
+func TestSecurityFix_JWTPriorityOverAdminKey(t *testing.T) {
+	api := NewAPIHandler(nil, "master_admin_secret_key")
+
+	// 1. Register and login regular user
+	regPayload, _ := json.Marshal(models.RegisterRequest{
+		Name:     "Regular Bob",
+		Username: "bob",
+		Email:    "bob@example.com",
+		Mobile:   "+1-555-0123",
+		Password: "password123",
+	})
+	regReq := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(regPayload))
+	regRec := httptest.NewRecorder()
+	api.Register(regRec, regReq)
+
+	var regRes models.LoginResponse
+	_ = json.Unmarshal(regRec.Body.Bytes(), &regRes)
+	userToken := regRes.Token
+
+	// 2. Make a request providing BOTH the user's Bearer JWT and the Master Admin API Key
+	req := httptest.NewRequest("GET", "/api/v1/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	req.Header.Set("X-API-Key", "master_admin_secret_key")
+
+	caller := api.getCaller(req)
+	if caller == nil {
+		t.Fatalf("expected non-nil caller")
+	}
+
+	// Must resolve to Bob (user role), NOT System Administrator (admin role)
+	if caller.Role != "user" {
+		t.Errorf("expected caller role 'user', got %s", caller.Role)
+	}
+	if caller.Username != "bob" {
+		t.Errorf("expected caller username 'bob', got %s", caller.Username)
+	}
+}
+
+// TestSecurityFix_UnauthenticatedAccessBlocked validates that sensitive endpoints
+// return 401 Unauthorized when accessed without valid credentials.
+func TestSecurityFix_UnauthenticatedAccessBlocked(t *testing.T) {
+	api := NewAPIHandler(nil, "master_admin_secret_key")
+
+	endpoints := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		url     string
+	}{
+		{"GetDevices", api.GetDevices, "GET", "/api/v1/devices"},
+		{"GetTenants", api.GetTenants, "GET", "/api/v1/tenants"},
+		{"GetChannels", api.GetChannels, "GET", "/api/v1/channels"},
+		{"GetRules", api.GetRules, "GET", "/api/v1/rules"},
+		{"GetAlarms", api.GetAlarms, "GET", "/api/v1/alarms"},
+		{"GetLatestTelemetry", api.GetLatestTelemetry, "GET", "/api/v1/devices/any-dev/telemetry/latest"},
+		{"GetTelemetryHistory", api.GetTelemetryHistory, "GET", "/api/v1/devices/any-dev/telemetry/history"},
+		{"ExportTelemetry", api.ExportTelemetry, "GET", "/api/v1/devices/any-dev/telemetry/export"},
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep.name, func(t *testing.T) {
+			req := httptest.NewRequest(ep.method, ep.url, nil)
+			req.SetPathValue("id", "any-dev")
+			rec := httptest.NewRecorder()
+			ep.handler(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Errorf("%s: expected 401 Unauthorized for unauthenticated request, got %d", ep.name, rec.Code)
+			}
+		})
+	}
+}
+
+// TestSecurityFix_TenantDeletionGuard validates that regular users cannot delete
+// the default organization workspace or workspaces owned by others.
+func TestSecurityFix_TenantDeletionGuard(t *testing.T) {
+	api := NewAPIHandler(nil, "master_admin_secret_key")
+
+	// 1. Register regular user Alice
+	regPayload, _ := json.Marshal(models.RegisterRequest{
+		Name:     "Alice Smith",
+		Username: "alice",
+		Email:    "alice@example.com",
+		Mobile:   "+1-555-0144",
+		Password: "password123",
+	})
+	regReq := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(regPayload))
+	regRec := httptest.NewRecorder()
+	api.Register(regRec, regReq)
+
+	var regRes models.LoginResponse
+	_ = json.Unmarshal(regRec.Body.Bytes(), &regRes)
+	aliceToken := regRes.Token
+
+	// 2. Alice tries to delete the system Default Organization -> MUST BE 403 FORBIDDEN
+	delDefaultReq := httptest.NewRequest("DELETE", "/api/v1/tenants/default-org", nil)
+	delDefaultReq.SetPathValue("id", "default-org")
+	delDefaultReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	delDefaultRec := httptest.NewRecorder()
+	api.DeleteTenant(delDefaultRec, delDefaultReq)
+
+	if delDefaultRec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden when regular user attempts to delete default-org, got %d", delDefaultRec.Code)
+	}
+
+	// 3. Alice creates her own workspace
+	wsPayload, _ := json.Marshal(models.Tenant{
+		Name: "Alice Personal Lab",
+		Slug: "alice-lab",
+	})
+	createReq := httptest.NewRequest("POST", "/api/v1/tenants", bytes.NewBuffer(wsPayload))
+	createReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	createRec := httptest.NewRecorder()
+	api.CreateTenant(createRec, createReq)
+
+	var createRes map[string]interface{}
+	_ = json.Unmarshal(createRec.Body.Bytes(), &createRes)
+	tenantObj := createRes["tenant"].(map[string]interface{})
+	aliceTenantID := tenantObj["id"].(string)
+
+	// 4. Bob registers and tries to delete Alice's workspace -> MUST BE 403 FORBIDDEN
+	bobRegPayload, _ := json.Marshal(models.RegisterRequest{
+		Name:     "Bob Hacker",
+		Username: "bob_hacker",
+		Email:    "bob_hacker@example.com",
+		Mobile:   "+1-555-0199",
+		Password: "password123",
+	})
+	bobRegReq := httptest.NewRequest("POST", "/api/v1/auth/register", bytes.NewBuffer(bobRegPayload))
+	bobRegRec := httptest.NewRecorder()
+	api.Register(bobRegRec, bobRegReq)
+	var bobRegRes models.LoginResponse
+	_ = json.Unmarshal(bobRegRec.Body.Bytes(), &bobRegRes)
+
+	delOtherReq := httptest.NewRequest("DELETE", "/api/v1/tenants/"+aliceTenantID, nil)
+	delOtherReq.SetPathValue("id", aliceTenantID)
+	delOtherReq.Header.Set("Authorization", "Bearer "+bobRegRes.Token)
+	delOtherRec := httptest.NewRecorder()
+	api.DeleteTenant(delOtherRec, delOtherReq)
+
+	if delOtherRec.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden when user attempts to delete another user's workspace, got %d", delOtherRec.Code)
+	}
+
+	// 5. Alice deletes her own workspace -> MUST SUCCEED (200 OK)
+	delAliceReq := httptest.NewRequest("DELETE", "/api/v1/tenants/"+aliceTenantID, nil)
+	delAliceReq.SetPathValue("id", aliceTenantID)
+	delAliceReq.Header.Set("Authorization", "Bearer "+aliceToken)
+	delAliceRec := httptest.NewRecorder()
+	api.DeleteTenant(delAliceRec, delAliceReq)
+
+	if delAliceRec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK when owner deletes their own workspace, got %d", delAliceRec.Code)
 	}
 }

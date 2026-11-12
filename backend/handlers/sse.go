@@ -62,6 +62,12 @@ func (b *SSEBroker) Broadcast(eventType string, data interface{}) {
 // StreamTelemetry handles GET /api/v1/telemetry/stream
 // Delivers zero-latency real-time server-sent events for telemetry, alarms, and downlink ACKs.
 func (h *APIHandler) StreamTelemetry(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: valid session token required for real-time telemetry stream")
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "Streaming unsupported by connection")

@@ -103,7 +103,9 @@ When TimescaleDB boots for the first time, `init.sql` automatically runs the dat
    - `rules`: Dynamic threshold guardrail safety policies.
    - `alarms`: Real-time triggered and historical threshold violation records.
    - `device_commands`: Downlink hardware control action logs and acknowledgments.
-   - `telemetry` *(Hypertable)*: Append-only time-series table partitioned into time chunks.
+   - `notification_channels`: Outbound alert dispatchers (Slack, Discord, generic Webhooks) with target URLs and severity filters.
+   - `firmware_packages`: OTA firmware binaries metadata, SHA-256 checksums, and storage file paths.
+   - `telemetry` *(Hypertable)*: Append-only time-series table partitioned into time chunks with composite index `idx_telemetry_time_created (time DESC, created_at DESC)`.
    - `latest_telemetry` *(Snapshot Cache)*: Fast $O(1)$ table storing the most recent reading for each device.
 
 3. **Automation Trigger**:
@@ -117,10 +119,11 @@ When TimescaleDB boots for the first time, `init.sql` automatically runs the dat
    - `telemetry_1m`: 1-minute rollup bucket (`avg`, `min`, `max`, `count`) for fast short-term metrics.
    - `telemetry_5m`: 5-minute continuous aggregate rollup for trend charts.
    - `telemetry_1h`: 1-hour rollup for long-range historical analysis.
-   - Automatic refresh policies scheduled via `add_continuous_aggregate_policy()`.
+   - Automatic refresh policies scheduled via `add_continuous_aggregate_policy()`. Continuous rollups are preserved even as raw records are pruned.
 
-2. **Retention Policy**:
-   - `add_retention_policy('telemetry', INTERVAL '30 days')`: Automatically drops raw hypertable chunks older than 30 days to keep database storage compact and fast.
+2. **Dual Retention Engine**:
+   - **Global 10,000-Record Retention Engine**: An asynchronous 30-second background worker periodically evaluates total row count against `MAX_TELEMETRY_RECORDS` (default: 10,000). When exceeded, older records are deleted in batches using the indexed timestamp cutoff (`idx_telemetry_time_created`) without locking the table or degrading ingest performance.
+   - **TimescaleDB Chunk Drop Policy**: `add_retention_policy('telemetry', INTERVAL '30 days')` automatically drops hypertable chunk partitions older than 30 days.
 
 ---
 
@@ -131,6 +134,7 @@ The Mosquitto configuration enables high-throughput local communication:
 - **WebSocket Port**: `9001` for direct browser MQTT connections.
 - **Anonymous Access**: `allow_anonymous true` for rapid local prototyping (can be secured with username/password authentication for production).
 - **Persistence**: Retains MQTT subscriptions across restarts.
+- **LWT & Status Topics**: Dispatches retained state changes on `devices/+/status` and `tenants/+/devices/+/status` when edge microcontrollers disconnect.
 
 ---
 
@@ -146,6 +150,10 @@ POSTGRES_PORT=5433
 # Mosquitto MQTT Broker Configuration
 MQTT_PORT=1883
 MQTT_WS_PORT=9001
+
+# Telemetry Retention Engine Configuration
+MAX_TELEMETRY_RECORDS=10000
+TELEMETRY_PRUNE_INTERVAL_SEC=30
 ```
 
 ---

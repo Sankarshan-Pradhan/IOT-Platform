@@ -23,6 +23,12 @@ An enterprise-grade, responsive IoT edge management portal and real-time telemet
   - [9. Clean Enterprise Light Theme](#9-clean-enterprise-light-theme)
   - [10. Guardrails & Dynamic Threshold Alarms](#10-guardrails--dynamic-threshold-alarms)
   - [11. JWT Authentication & Role-Based Access Control](#11-jwt-authentication--role-based-access-control)
+  - [12. Downlink Device Control & Actuation Panel](#12-downlink-device-control--actuation-panel)
+  - [13. TimescaleDB Continuous Aggregates & Data Export](#13-timescaledb-continuous-aggregates--data-export)
+  - [14. Outbound Alert Notification Channels](#14-outbound-alert-notification-channels)
+  - [15. Zero-Latency Real-Time Streaming (SSE)](#15-zero-latency-real-time-streaming-sse)
+  - [16. Production Multi-Stage Containerization (Nginx)](#16-production-multi-stage-containerization-nginx)
+  - [17. Telemetry Storage Retention Meter & Pruning Trigger](#17-telemetry-storage-retention-meter--pruning-trigger)
 - [Project Directory Layout](#project-directory-layout)
 - [Getting Started](#getting-started)
 - [Configuration & API Proxy](#configuration--api-proxy)
@@ -119,9 +125,11 @@ The left navigation sidebar presents a clean, logical management flow matching e
 
 ---
 
-### 11. JWT Authentication & Role-Based Access Control
+### 11. JWT Authentication, Security Hardening & RBAC
 - **Secure Token Session Storage**: Authenticates against `/api/v1/auth/login` or `/api/v1/auth/register`, storing an HS256 JWT in `localStorage`.
-- **Automatic Header Injection**: `api.js` attaches `Authorization: Bearer <jwt_token>` to all protected endpoints.
+- **Hardcoded Secret Elimination**: Insecure static admin fallback keys have been completely eliminated from the client bundle. All requests are authenticated strictly via signed user JWT sessions.
+- **Automatic Header Injection**: `api.js` attaches `Authorization: Bearer <jwt_token>` to all protected endpoints (`/devices`, `/tenants`, `/channels`, `/rules`, `/alarms`, and telemetry queries).
+- **Multi-Tenant Workspace Isolation**: Regular users exclusively view and control resources in workspaces they own; cross-tenant operations are blocked by the backend.
 - **Live User Pill**: Top header displays caller's full name, `@username` badge, role pill (`ADMIN` vs `USER`), and a one-click Sign Out button.
 
 ---
@@ -151,16 +159,28 @@ Integrated in [`GuardrailsModal.jsx`](src/components/GuardrailsModal.jsx):
 
 ---
 
-### 15. Zero-Latency Real-Time Streaming (SSE)
-- Header displays an animated `Live SSE (0ms)` status badge when connected to the backend EventSource (`GET /api/v1/telemetry/stream`).
-- Telemetry gauges, historical charts, and alarm badges update with 0ms delay upon packet ingestion, eliminating polling latency.
-- Automatic fallback to standard 5s polling if SSE disconnected.
+### 15. Zero-Latency Real-Time Streaming (SSE) & Device Status
+- **Authenticated EventSource**: Establishes an SSE connection to `/api/v1/telemetry/stream?token=${encodeURIComponent(token)}`, ensuring live streams are authenticated and secure.
+- **Zero-Latency Push**: Telemetry metric cards, historical charts, and alarm badges update with 0ms delay upon packet ingestion, eliminating polling latency.
+- **Dynamic Device Online/Offline Badges**: The client listens to the `device_status` SSE event, automatically updating sensor badges between active green and offline gray when devices connect, disconnect (via MQTT LWT), or time out.
+- **Automatic Fallback**: Gracefully falls back to standard 5s polling if SSE is temporarily disconnected or unsupported.
 
 ---
 
 ### 16. Production Multi-Stage Containerization (Nginx)
 - **Dockerfile:** [`frontend/Dockerfile`](Dockerfile) builds production assets in Node 20 and serves them using lightweight `nginx:alpine`.
 - **Nginx Reverse Proxy:** [`frontend/nginx.conf`](nginx.conf) proxies `/api/` calls to the Go backend and configures zero-buffering (`proxy_buffering off;`) for Server-Sent Events.
+
+---
+
+### 17. Telemetry Storage Retention Meter & Pruning Trigger
+Integrated in [`Header.jsx`](src/components/Header.jsx):
+- **Live Capacity Meter**: Displays current platform storage usage against the global 10,000-record retention cap (`Storage: X / 10,000 (Y%)`).
+- **Dynamic Color Warnings**:
+  - Green / Gray: Safe utilization (< 80%).
+  - Amber: High utilization (>= 80%).
+  - Red: Approaching retention cap (>= 95%).
+- **Manual "Prune Now" Button**: Operators can click the prune action to immediately trigger `POST /api/v1/telemetry/prune`, purging older records without waiting for the 30-second background worker.
 
 ---
 

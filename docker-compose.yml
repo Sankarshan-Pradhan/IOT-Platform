@@ -66,6 +66,8 @@ services:
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123}"
       JWT_SECRET: "${JWT_SECRET:-iot_jwt_super_secret_key_2026}"
+      MAX_TELEMETRY_RECORDS: "${MAX_TELEMETRY_RECORDS:-10000}"
+      TELEMETRY_PRUNE_INTERVAL_SEC: "${TELEMETRY_PRUNE_INTERVAL_SEC:-30}"
     ports:
       - "8080:8080"
     healthcheck:

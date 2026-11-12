@@ -86,6 +86,14 @@ func (h *APIHandler) UploadFirmware(w http.ResponseWriter, r *http.Request) {
 	h.memFirmwares[fw.ID] = fw
 	h.mu.Unlock()
 
+	if h.isDBReady() {
+		_, _ = h.DB.Exec(`
+			INSERT INTO firmware_packages (id, version, device_type, filename, size_bytes, checksum_sha, description, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (id) DO NOTHING;
+		`, fw.ID, fw.Version, fw.DeviceType, fw.Filename, fw.SizeBytes, fw.ChecksumSHA, fw.Description, fw.CreatedAt)
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":   "success",
 		"message":  "Firmware binary uploaded and verified successfully",
@@ -95,6 +103,29 @@ func (h *APIHandler) UploadFirmware(w http.ResponseWriter, r *http.Request) {
 
 // ListFirmwares handles GET /api/v1/ota/firmware
 func (h *APIHandler) ListFirmwares(w http.ResponseWriter, r *http.Request) {
+	if h.isDBReady() {
+		rows, err := h.DB.Query(`
+			SELECT id, version, device_type, filename, size_bytes, checksum_sha, COALESCE(description, ''), created_at
+			FROM firmware_packages
+			ORDER BY created_at DESC;
+		`)
+		if err == nil {
+			defer rows.Close()
+			list := make([]models.Firmware, 0)
+			for rows.Next() {
+				var fw models.Firmware
+				if err := rows.Scan(&fw.ID, &fw.Version, &fw.DeviceType, &fw.Filename, &fw.SizeBytes, &fw.ChecksumSHA, &fw.Description, &fw.CreatedAt); err == nil {
+					list = append(list, fw)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"count":     len(list),
+				"firmwares": list,
+			})
+			return
+		}
+	}
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 

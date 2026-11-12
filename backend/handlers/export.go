@@ -15,9 +15,20 @@ import (
 // ExportTelemetry handles GET /api/v1/devices/{id}/telemetry/export?format=csv|json&limit=5000
 // Streams historical telemetry as downloadable CSV or JSON attachments for data reporting & audits.
 func (h *APIHandler) ExportTelemetry(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized: authentication required to export telemetry")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "Device ID is required in URL path")
+		return
+	}
+
+	device, err := h.resolveDevice(id)
+	if err == nil && caller.Role != "admin" && !h.userOwnsTenant(caller, device.TenantID) {
+		writeError(w, http.StatusForbidden, "Forbidden: you do not have permission to export telemetry for this device")
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"iot-backend/backend/handlers"
@@ -17,15 +18,17 @@ import (
 )
 
 type Config struct {
-	DBHost        string
-	DBPort        string
-	DBUser        string
-	DBPassword    string
-	DBName        string
-	MQTTBrokerURL string
-	MQTTClientID  string
-	ServerPort    string
-	AdminAPIKey   string
+	DBHost               string
+	DBPort               string
+	DBUser               string
+	DBPassword           string
+	DBName               string
+	MQTTBrokerURL        string
+	MQTTClientID         string
+	ServerPort           string
+	AdminAPIKey          string
+	MaxTelemetryRecords  int
+	PruneIntervalSeconds int
 }
 
 func getEnv(key, defaultVal string) string {
@@ -47,16 +50,30 @@ func loadConfig() Config {
 	mqttHost := getEnv("MQTT_HOST", "localhost")
 	defaultBrokerURL := fmt.Sprintf("tcp://%s:%s", mqttHost, mqttPort)
 
+	maxTelemetryStr := getEnv("MAX_TELEMETRY_RECORDS", "10000")
+	maxTelemetry, err := strconv.Atoi(maxTelemetryStr)
+	if err != nil || maxTelemetry <= 0 {
+		maxTelemetry = 10000
+	}
+
+	pruneIntervalStr := getEnv("TELEMETRY_PRUNE_INTERVAL_SEC", "30")
+	pruneInterval, err := strconv.Atoi(pruneIntervalStr)
+	if err != nil || pruneInterval <= 0 {
+		pruneInterval = 30
+	}
+
 	return Config{
-		DBHost:        getEnv("POSTGRES_HOST", "localhost"),
-		DBPort:        getEnv("POSTGRES_PORT", "5433"),
-		DBUser:        getEnv("POSTGRES_USER", "iot_user"),
-		DBPassword:    getEnv("POSTGRES_PASSWORD", "iot_secure_password"),
-		DBName:        getEnv("POSTGRES_DB", "iot_platform"),
-		MQTTBrokerURL: getEnv("MQTT_BROKER_URL", defaultBrokerURL),
-		MQTTClientID:  getEnv("MQTT_CLIENT_ID", "iot-backend-service"),
-		ServerPort:    getEnv("PORT", "8080"),
-		AdminAPIKey:   getEnv("ADMIN_API_KEY", "iot_admin_secret_key_2026"),
+		DBHost:               getEnv("POSTGRES_HOST", "localhost"),
+		DBPort:               getEnv("POSTGRES_PORT", "5433"),
+		DBUser:               getEnv("POSTGRES_USER", "iot_user"),
+		DBPassword:           getEnv("POSTGRES_PASSWORD", "iot_secure_password"),
+		DBName:               getEnv("POSTGRES_DB", "iot_platform"),
+		MQTTBrokerURL:        getEnv("MQTT_BROKER_URL", defaultBrokerURL),
+		MQTTClientID:         getEnv("MQTT_CLIENT_ID", "iot-backend-service"),
+		ServerPort:           getEnv("PORT", "8080"),
+		AdminAPIKey:          getEnv("ADMIN_API_KEY", "iot_admin_secret_key_2026"),
+		MaxTelemetryRecords:  maxTelemetry,
+		PruneIntervalSeconds: pruneInterval,
 	}
 }
 
@@ -88,6 +105,8 @@ func main() {
 
 	var db *sql.DB
 	api := handlers.NewAPIHandler(nil, cfg.AdminAPIKey)
+	api.SetTelemetryRetention(cfg.MaxTelemetryRecords, cfg.PruneIntervalSeconds)
+	log.Printf("[RETENTION] Telemetry retention policy active: max %d records (prune interval: %ds)", cfg.MaxTelemetryRecords, cfg.PruneIntervalSeconds)
 
 	// Decouple MQTT from DB: initialize MQTT service with decoupled ingestion processor
 	mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, api)
@@ -115,6 +134,12 @@ func main() {
 			db = newDB
 			api.SetDB(newDB)
 			log.Println("[Success] Connected to TimescaleDB/PostgreSQL successfully.")
+			// Initial retention prune check upon connecting
+			go func() {
+				if pruned, err := api.PruneOldTelemetry(cfg.MaxTelemetryRecords); err == nil && pruned > 0 {
+					log.Printf("[RETENTION] Initial prune: removed %d old telemetry records exceeding %d cap", pruned, cfg.MaxTelemetryRecords)
+				}
+			}()
 		}
 	}
 
@@ -136,28 +161,54 @@ func main() {
 		}
 	}()
 
+	// Background worker to enforce global telemetry retention cap (default 10,000 records)
+	go func() {
+		ticker := time.NewTicker(time.Duration(cfg.PruneIntervalSeconds) * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if api != nil {
+				if pruned, err := api.PruneOldTelemetry(cfg.MaxTelemetryRecords); err == nil && pruned > 0 {
+					log.Printf("[RETENTION] Successfully pruned %d old telemetry records (exceeded %d global cap)", pruned, cfg.MaxTelemetryRecords)
+				}
+			}
+		}
+	}()
+
+	// Background worker to mark stale devices offline after 60 seconds of telemetry silence
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if api != nil {
+				_, _ = api.CheckStaleDevices(60 * time.Second)
+			}
+		}
+	}()
+
 	// HTTP Handlers & Router (Go 1.22+ pattern routing)
 	mux := http.NewServeMux()
 
 	// Tenant Management
-	mux.HandleFunc("GET /api/v1/tenants", api.GetTenants)
-	mux.HandleFunc("POST /api/v1/tenants", api.CreateTenant)
+	mux.HandleFunc("GET /api/v1/tenants", api.AuthMiddleware(api.GetTenants))
+	mux.HandleFunc("POST /api/v1/tenants", api.AuthMiddleware(api.CreateTenant))
 	mux.HandleFunc("DELETE /api/v1/tenants/{id}", api.AuthMiddleware(api.DeleteTenant))
 
 	// Channel Management
-	mux.HandleFunc("GET /api/v1/channels", api.GetChannels)
-	mux.HandleFunc("POST /api/v1/channels", api.CreateChannel)
+	mux.HandleFunc("GET /api/v1/channels", api.AuthMiddleware(api.GetChannels))
+	mux.HandleFunc("POST /api/v1/channels", api.AuthMiddleware(api.CreateChannel))
 	mux.HandleFunc("DELETE /api/v1/channels/{id}", api.AuthMiddleware(api.DeleteChannel))
 
 	// Device Registry
-	mux.HandleFunc("GET /api/v1/devices", api.GetDevices)
+	mux.HandleFunc("GET /api/v1/devices", api.AuthMiddleware(api.GetDevices))
 	mux.HandleFunc("POST /api/v1/devices", api.AuthMiddleware(api.CreateDevice))
 
 	// Telemetry Queries, Export & Real-Time SSE Event Stream
-	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/latest", api.GetLatestTelemetry)
-	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/history", api.GetTelemetryHistory)
-	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/export", api.ExportTelemetry)
+	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/latest", api.AuthMiddleware(api.GetLatestTelemetry))
+	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/history", api.AuthMiddleware(api.GetTelemetryHistory))
+	mux.HandleFunc("GET /api/v1/devices/{id}/telemetry/export", api.AuthMiddleware(api.ExportTelemetry))
 	mux.HandleFunc("GET /api/v1/telemetry/stream", api.StreamTelemetry)
+	mux.HandleFunc("GET /api/v1/telemetry/stats", api.GetTelemetryStats)
+	mux.HandleFunc("POST /api/v1/telemetry/prune", api.AuthMiddleware(api.PruneTelemetryHTTP))
 
 	// Telemetry Ingestion (HTTP)
 	mux.HandleFunc("POST /api/v1/devices/{id}/telemetry", api.IngestDeviceTelemetry)
@@ -189,12 +240,12 @@ func main() {
 	mux.HandleFunc("DELETE /api/v1/users/{id}", api.AuthMiddleware(api.DeleteUser))
 
 	// Guardrail Threshold Rules Engine
-	mux.HandleFunc("GET /api/v1/rules", api.GetRules)
+	mux.HandleFunc("GET /api/v1/rules", api.AuthMiddleware(api.GetRules))
 	mux.HandleFunc("POST /api/v1/rules", api.AuthMiddleware(api.CreateRule))
 	mux.HandleFunc("DELETE /api/v1/rules/{id}", api.AuthMiddleware(api.DeleteRule))
 
 	// Alarms Management
-	mux.HandleFunc("GET /api/v1/alarms", api.GetAlarms)
+	mux.HandleFunc("GET /api/v1/alarms", api.AuthMiddleware(api.GetAlarms))
 	mux.HandleFunc("POST /api/v1/alarms/{id}/acknowledge", api.AuthMiddleware(api.AcknowledgeAlarm))
 	mux.HandleFunc("POST /api/v1/alarms/{id}/resolve", api.AuthMiddleware(api.ResolveAlarm))
 	mux.HandleFunc("DELETE /api/v1/alarms/{id}", api.AuthMiddleware(api.DeleteAlarm))
@@ -251,6 +302,8 @@ func main() {
 				"POST /api/v1/devices (Protected)",
 				"GET  /api/v1/devices/{id}/telemetry/latest",
 				"GET  /api/v1/devices/{id}/telemetry/history",
+				"GET  /api/v1/telemetry/stats",
+				"POST /api/v1/telemetry/prune (Protected)",
 				"POST /api/v1/devices/{id}/telemetry",
 				"POST /api/v1/telemetry",
 				"DELETE /api/v1/devices/{id} (Protected)",

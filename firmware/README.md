@@ -61,9 +61,10 @@ Production-ready firmware for the ESP32 microcontroller paired with the DHT22 (A
 3. **Dual Exponential Reconnect Backoff**:
    - Both WiFi and MQTT connections implement independent exponential backoff starting at **1 second** and doubling up to **60 seconds** max (`1s → 2s → 4s → 8s → 16s → 32s → 60s`).
    - Prevents network flood storms during router restarts or broker maintenance.
-4. **MQTT Last Will and Testament (LWT)**:
-   - Configures an automatic LWT payload (`{"status":"offline"}`) on topic `devices/<id>/status` with QoS 1 and retain flag enabled.
-   - If an ESP32 loses power or network abruptly, the broker immediately alerts the backend.
+4. **MQTT Last Will and Testament (LWT) & Status Lifecycle**:
+   - Configures an automatic LWT payload (`"offline"`) on topic `devices/<id>/status` with QoS 1 and retain flag enabled during initial MQTT connect handshake.
+   - Upon successful broker connection, immediately publishes `"online"` with retain flag to notify backend and UI clients.
+   - If an ESP32 loses power or drops Wi-Fi abruptly, Mosquitto dispatches the LWT payload, updating the database status and broadcasting a `device_status` SSE event to the React dashboard in real-time.
 5. **Hardware Status LED & Relay Output**:
    - Supports GPIO 26 for relay switching and GPIO 2 for status beacon LED.
 6. **Rich Telemetry Packet**:
@@ -98,10 +99,11 @@ After executing each command, the node publishes an acknowledgment packet to `de
 ## 🚀 Over-the-Air (OTA) Firmware Flashing
 
 When an `ota_update` command is received:
-1. The firmware parses the binary URL from payload.
-2. Dispatches an acknowledgment with status `ACKNOWLEDGED` and result `OTA Flash initiated`.
-3. Calls `httpUpdate.update(client, otaUrl)`.
-4. Automatically reboots upon successful flashing and joins the network with the updated firmware.
+1. The firmware extracts the binary download URL and optional firmware version string from the JSON command payload.
+2. Dispatches an immediate pre-update acknowledgment to `devices/<DEVICE_ID>/command_ack` with status `ACKNOWLEDGED` and result `OTA Flash initiated` (allowing the dashboard to render a download progress indicator).
+3. Invokes the native ESP32 `httpUpdate.update(wifiClient, otaUrl)` engine.
+4. Streams and writes the compiled binary into the secondary flash partition (`OTA_0` / `OTA_1`).
+5. Upon successful checksum validation and partition switch, the ESP32 automatically reboots and registers with the new firmware version.
 
 ---
 

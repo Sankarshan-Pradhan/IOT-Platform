@@ -20,15 +20,19 @@ func (m *mockMQTTMessage) Payload() []byte   { return m.payload }
 func (m *mockMQTTMessage) Ack()              {}
 
 type mockProcessor struct {
-	lastTenantID      string
-	lastChannelID     string
-	lastDeviceID      string
-	lastTelemetryTime time.Time
-	lastPayload       []byte
-	lastAckDeviceID   string
-	lastAckPayload    []byte
-	callCount         int
-	ackCount          int
+	lastTenantID       string
+	lastChannelID      string
+	lastDeviceID       string
+	lastTelemetryTime  time.Time
+	lastPayload        []byte
+	lastAckDeviceID    string
+	lastAckPayload     []byte
+	lastStatusTenantID string
+	lastStatusDeviceID string
+	lastStatus         string
+	callCount          int
+	ackCount           int
+	statusCount        int
 }
 
 func (m *mockProcessor) ProcessTelemetry(tenantID, channelID, deviceID string, telemetryTime time.Time, payloadData []byte) error {
@@ -45,6 +49,14 @@ func (m *mockProcessor) ProcessCommandAck(deviceID string, payloadData []byte) e
 	m.lastAckDeviceID = deviceID
 	m.lastAckPayload = payloadData
 	m.ackCount++
+	return nil
+}
+
+func (m *mockProcessor) ProcessDeviceStatus(tenantID, deviceID, status string) error {
+	m.lastStatusTenantID = tenantID
+	m.lastStatusDeviceID = deviceID
+	m.lastStatus = status
+	m.statusCount++
 	return nil
 }
 
@@ -174,5 +186,57 @@ func TestMQTTCommandAck(t *testing.T) {
 
 	if proc.lastAckDeviceID != "esp32-dht22-node1" {
 		t.Errorf("expected device ID 'esp32-dht22-node1', got '%s'", proc.lastAckDeviceID)
+	}
+}
+
+func TestMQTTDeviceStatus_LWT(t *testing.T) {
+	proc := &mockProcessor{}
+	svc := &MQTTService{processor: proc}
+
+	msg := &mockMQTTMessage{
+		topic:   "devices/esp32-sensor-99/status",
+		payload: []byte("offline"),
+	}
+
+	svc.handleMessage(nil, msg)
+
+	if proc.statusCount != 1 {
+		t.Fatalf("expected 1 call to ProcessDeviceStatus, got %d", proc.statusCount)
+	}
+
+	if proc.lastStatusDeviceID != "esp32-sensor-99" {
+		t.Errorf("expected device ID 'esp32-sensor-99', got '%s'", proc.lastStatusDeviceID)
+	}
+
+	if proc.lastStatus != "offline" {
+		t.Errorf("expected status 'offline', got '%s'", proc.lastStatus)
+	}
+}
+
+func TestMQTTDeviceStatus_JSON(t *testing.T) {
+	proc := &mockProcessor{}
+	svc := &MQTTService{processor: proc}
+
+	msg := &mockMQTTMessage{
+		topic:   "tenants/t-corp-01/devices/esp32-sensor-42/status",
+		payload: []byte(`{"status":"online"}`),
+	}
+
+	svc.handleMessage(nil, msg)
+
+	if proc.statusCount != 1 {
+		t.Fatalf("expected 1 call to ProcessDeviceStatus, got %d", proc.statusCount)
+	}
+
+	if proc.lastStatusTenantID != "t-corp-01" {
+		t.Errorf("expected tenant ID 't-corp-01', got '%s'", proc.lastStatusTenantID)
+	}
+
+	if proc.lastStatusDeviceID != "esp32-sensor-42" {
+		t.Errorf("expected device ID 'esp32-sensor-42', got '%s'", proc.lastStatusDeviceID)
+	}
+
+	if proc.lastStatus != "online" {
+		t.Errorf("expected status 'online', got '%s'", proc.lastStatus)
 	}
 }

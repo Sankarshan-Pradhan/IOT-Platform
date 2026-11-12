@@ -3,13 +3,20 @@
 Production-grade Arduino/PlatformIO firmware for 1–2 ESP32 nodes connected to DHT22 temperature and humidity sensors.
 
 ## Features
-- **Sensor Polling**: Reads temperature (°C) and relative humidity (%) every **5 seconds**.
-- **JSON Telemetry**: Publishes standardized JSON payloads to `devices/<DEVICE_ID>/telemetry`.
-- **Dual Reconnect Backoff**:
-  - **WiFi Backoff**: Exponential backoff from 1 second up to 60 seconds on network drop.
-  - **MQTT Backoff**: Exponential backoff from 1 second up to 60 seconds on broker restart/failure.
-- **Non-blocking Loop**: Zero `delay()` in the main loop to prevent watchdog timeout (WDT) resets.
-- **LWT (Last Will and Testament)**: Automatically marks device as `offline` if the connection drops abruptly.
+- **Sensor Polling**: Reads ambient temperature (°C) and relative humidity (%) from DHT22 every **5 seconds** (configurable dynamically).
+- **JSON Telemetry**: Publishes standardized JSON payloads with sequence counter and uptime to `devices/<DEVICE_ID>/telemetry` (QoS 1).
+- **Two-Way Downlink Actuation**: Subscribes to `devices/<DEVICE_ID>/commands` and acknowledges receipts on `devices/<DEVICE_ID>/command_ack`:
+  - `set_relay`: Switches AC/DC relay module connected to GPIO 26.
+  - `toggle_led`: Toggles onboard status beacon LED on GPIO 2.
+  - `set_interval`: Dynamically changes telemetry publishing interval (1s to 60s).
+  - `reboot`: Safely restarts microcontroller via `ESP.restart()`.
+  - `ota_update`: Initiates wireless firmware flashing via `HTTPUpdate`.
+- **Pre-Update OTA Flashing**: Wirelessly downloads and flashes `.bin` binaries over Wi-Fi with dual-partition fail-safe fallback.
+- **MQTT Last Will & Testament (LWT)**: Configures retained `"offline"` payload on `devices/<DEVICE_ID>/status`, with retained `"online"` published upon connection.
+- **Dual Reconnect Exponential Backoff**:
+  - **WiFi Backoff**: Exponential backoff from 1s up to 60s (`1s → 2s → 4s → ... → 60s`).
+  - **MQTT Backoff**: Exponential backoff from 1s up to 60s.
+- **Non-blocking Loop**: Zero `delay()` in the main loop to guarantee keep-alive packets and prevent watchdog timeouts (WDT).
 - **Status LED Indication**:
   - 2 quick blinks when MQTT connects.
   - 30ms pulse on each successful telemetry transmission.

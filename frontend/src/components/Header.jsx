@@ -8,7 +8,8 @@ import {
   Pause, 
   Thermometer, 
   Shield,
-  ShieldAlert
+  ShieldAlert,
+  HardDrive
 } from 'lucide-react';
 
 export default function Header({
@@ -28,6 +29,9 @@ export default function Header({
   onOpenLoginModal,
   onLogout,
   isSSEConnected = false,
+  telemetryStats = null,
+  onPruneTelemetry = null,
+  isPruning = false,
 }) {
   const isBackendOk = health && health.status === 'ok';
   const isDbOk = health && health.database === 'connected';
@@ -85,6 +89,27 @@ export default function Header({
               {isDbOk ? 'Ready' : 'Waiting'}
             </span>
           </div>
+
+          {/* Telemetry Storage Meter (10,000 Records Cap) */}
+          {telemetryStats && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/60 text-xs">
+              <HardDrive className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+              <span className="text-slate-500 dark:text-slate-400 hidden sm:inline">Storage:</span>
+              <span className="font-semibold text-slate-800 dark:text-slate-200">
+                {(telemetryStats.total_records || 0).toLocaleString()} / {(telemetryStats.max_records || 10000).toLocaleString()}
+              </span>
+              {onPruneTelemetry && (
+                <button
+                  onClick={onPruneTelemetry}
+                  disabled={isPruning}
+                  title="Prune older records to 10,000 limit"
+                  className="ml-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white transition-colors disabled:opacity-50"
+                >
+                  {isPruning ? '...' : 'Prune'}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Guardrail Alarms Indicator Button */}
           <button

@@ -161,17 +161,19 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
         |     TimescaleDB (PostgreSQL 16)     |        |   React 18 + Vite Dashboard (:3000) |
         |  ├── users, tenants, channels       |        |  ├── Workspaces & Tenancy Manager   |
         |  ├── devices (channel_id FK)        |        |  ├── Groups & Telemetry Channels    |
-        |  ├── telemetry (Hypertable)         |        |  ├── Assign Existing Device Modal   |
-        |  ├── telemetry_1m/5m/1h (Rollups)   |        |  ├── Live 0ms SSE Telemetry Stream  |
-        |  ├── device_commands & channels     |        |  ├── Device Control Panel (Relays)  |
-        |  ├── rules & alarms                 |        |  ├── Rollup Downsampling (1m/5m/1h) |
-        |  └── 30-Day Chunk Retention Policy  |        |  └── CSV/JSON Data Export Trigger   |
-        +-------------------------------------+        +-------------------------------------+
+        |  ├── notification_channels (Alerts) |        |  ├── Assign Existing Device Modal   |
+        |  ├── firmware_packages (OTA .bin)   |        |  ├── Live 0ms SSE Telemetry Stream  |
+        |  ├── rules & alarms                 |        |  ├── Storage Meter Badge & Prune    |
+        |  ├── telemetry (Hypertable)         |        |  ├── Device Control Panel (Relays)  |
+        |  ├── telemetry_1m/5m/1h (Rollups)   |        |  ├── Rollup Downsampling (1m/5m/1h) |
+        |  ├── device_commands & logs         |        |  └── CSV/JSON Data Export Trigger   |
+        |  └── 10k FIFO + 30-Day Retention    |        +-------------------------------------+
+        +-------------------------------------+
 ```
 
 ---
 
-## 🚀 8 Enterprise Production Features
+## 🚀 Enterprise Production Features
 
 ### 1. Two-Way Downlink Device Control & Actuation
 - **MQTT Topics:** Dispatches to `devices/{id}/commands`, receives ACKs on `devices/{id}/command_ack`.
@@ -218,32 +220,72 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 - **Cold-Boot Fault Tolerance:** If Mosquitto boots after the backend or restarts dynamically, the worker automatically re-establishes the connection and re-subscribes to all telemetry channels.
 - **Unlimited Fleet Scaling:** Workspaces have **zero artificial device caps**. New hardware nodes streaming with your workspace tenant UUID automatically self-register on their first telemetry packet.
 
+### 10. Automated Global Telemetry Retention & Pruning (10,000 Record Cap)
+- **Automatic Pruning Worker:** An asynchronous 30-second background worker periodically checks if total telemetry rows exceed `MAX_TELEMETRY_RECORDS` (default: 10,000).
+- **Fast Time-Cutoff Deletion:** Efficiently finds the 10,000th newest record timestamp and removes all older records without blocking real-time telemetry ingestion or adding latency to edge nodes.
+- **Storage Protection:** Prevents storage unbounded growth on persistent TimescaleDB hypertables while preserving continuous aggregate views (`telemetry_1m`, `telemetry_5m`, `telemetry_1h`) for historical analytics.
+- **On-Demand & Monitoring APIs:** Real-time storage stats via `GET /api/v1/telemetry/stats` and manual pruning triggers via `POST /api/v1/telemetry/prune`.
+
+### 11. Real-Time Device Offline & Stale Timeout Detection
+- **MQTT Last Will and Testament (LWT):** Mosquitto automatically dispatches `"offline"` to `devices/{id}/status` upon unexpected edge node disconnections, immediately updating the database and broadcasting via SSE.
+- **60-Second Silence Heartbeat Worker:** Go backend continuously monitors telemetry transmission timestamps, automatically transitioning silent nodes to `"offline"` state.
+- **Dynamic SSE Status Badges:** The React dashboard listens to `device_status` events and shifts device badges between active green and offline gray in real-time without page reload.
+
+### 12. Enterprise Security, Tenant Scoping & RBAC Hardening
+- **JWT Authorization Precedence:** Go backend strictly prioritizes user JWT session claims (`Authorization: Bearer <jwt>` and `?token=<jwt>`) over static admin API keys, preventing privilege escalation.
+- **Client-Side Secret Elimination:** Removed static admin fallback secrets from frontend bundles; all web UI interactions are authenticated via signed JWT tokens.
+- **Authenticated SSE Streaming:** The real-time Server-Sent Events broker (`/api/v1/telemetry/stream`) enforces authentication via JWT Bearer headers, query tokens (`?token=`), or API keys (`?api_key=`), blocking unauthenticated eavesdropping on telemetry and alerts.
+- **Strict Multi-Tenant Scoping:** All critical endpoints (`/devices`, `/tenants`, `/channels`, `/rules`, `/alarms`, `/telemetry/*`) strictly enforce tenant ownership. Non-admin users can only view and manage resources within their own workspaces.
+- **Workspace & Device Deletion Guards:** System workspaces (such as `default-org` or UUID `a0000000-0000-0000-0000-000000000001`) and workspaces owned by other users cannot be deleted by regular users. Bulk device wipe (`POST /api/v1/devices/reset`) is strictly locked to platform administrators.
+- **IP-Based Login Rate Limiting:** Sliding-window rate limiter prevents automated brute-force attacks on `/api/v1/auth/login`.
+- **Relational Persistence for Integrations:** Alert notification channels (Slack, Discord, custom Webhooks) and OTA firmware packages are persistently stored in relational PostgreSQL tables with automatic schema migrations.
+
 ---
 
 ## 🔌 API Reference Summary
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/v1/auth/register` | Register new user account |
-| `POST` | `/api/v1/auth/login` | Authenticate and obtain JWT token |
-| `GET` | `/api/v1/tenants` | List workspaces for caller |
-| `POST` | `/api/v1/tenants` | Create new workspace |
-| `DELETE` | `/api/v1/tenants/{id}` | Delete workspace (including default org) |
-| `GET` | `/api/v1/channels` | List channels with dynamic `devices_count` |
-| `POST` | `/api/v1/channels` | Create telemetry channel |
-| `DELETE` | `/api/v1/channels/{id}` | Delete channel |
-| `GET` | `/api/v1/devices` | Query devices (filter by `tenant_id` / `channel_id`) |
-| `POST` | `/api/v1/devices` | Register new sensor device |
-| `PATCH` | `/api/v1/devices/{id}` | Update device (assign/unlink channel, name, type) |
-| `DELETE` | `/api/v1/devices/{id}` | Delete device and its telemetry |
-| `POST` | `/api/v1/devices/{id}/telemetry` | HTTP telemetry ingestion |
-| `GET` | `/api/v1/devices/{id}/telemetry/latest` | Fetch latest telemetry record |
-| `GET` | `/api/v1/devices/{id}/telemetry/history` | Query time-series telemetry history |
-| `GET` | `/api/v1/devices/{id}/telemetry/export` | Stream CSV or JSON historical data |
-| `GET` | `/api/v1/telemetry/stream` | Zero-latency Server-Sent Events (SSE) stream |
-| `POST` | `/api/v1/devices/{id}/commands` | Dispatch downlink hardware actuation command |
-| `POST` | `/api/v1/ota/firmware` | Upload `.bin` firmware binary for OTA |
-| `POST` | `/api/v1/devices/{id}/ota` | Trigger wireless Over-The-Air flashing |
+| Method | Endpoint | Auth Required | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/register` | Public | Register new user account |
+| `POST` | `/api/v1/auth/login` | Public (Rate-Limited) | Authenticate and obtain JWT token |
+| `GET` | `/api/v1/auth/me` | Protected | Fetch current authenticated user profile |
+| `GET` | `/api/v1/users` | Protected (Admin Only) | User directory and workspace counts |
+| `GET` | `/api/v1/tenants` | Protected (Scoped) | List workspaces owned by caller (or all for Admin) |
+| `POST` | `/api/v1/tenants` | Protected | Create new workspace (locked to caller ID) |
+| `DELETE` | `/api/v1/tenants/{id}` | Protected | Delete workspace (ownership guarded; system protected) |
+| `GET` | `/api/v1/channels` | Protected (Scoped) | List channels for caller's workspaces |
+| `POST` | `/api/v1/channels` | Protected | Create telemetry channel in caller's workspace |
+| `DELETE` | `/api/v1/channels/{id}` | Protected | Delete channel (ownership guarded) |
+| `GET` | `/api/v1/devices` | Protected (Scoped) | Query devices in caller's workspaces |
+| `POST` | `/api/v1/devices` | Protected | Register new device in caller's workspace |
+| `PATCH` | `/api/v1/devices/{id}` | Protected | Update device (assign/unlink channel, name, type) |
+| `DELETE` | `/api/v1/devices/{id}` | Protected | Delete device and purge its telemetry |
+| `POST` | `/api/v1/devices/reset` | Protected (Admin Only) | Wipe all devices across platform |
+| `GET` | `/api/v1/rules` | Protected (Scoped) | List guardrail threshold safety rules |
+| `POST` | `/api/v1/rules` | Protected | Create dynamic threshold safety rule |
+| `DELETE` | `/api/v1/rules/{id}` | Protected | Delete guardrail rule |
+| `GET` | `/api/v1/alarms` | Protected (Scoped) | List active/historical guardrail alarms |
+| `POST` | `/api/v1/alarms/{id}/acknowledge` | Protected | Acknowledge active alarm |
+| `POST` | `/api/v1/alarms/{id}/resolve` | Protected | Manually resolve active alarm |
+| `DELETE` | `/api/v1/alarms/{id}` | Protected | Delete alarm record |
+| `POST` | `/api/v1/devices/{id}/telemetry` | Public / Device Token | HTTP telemetry ingestion from edge nodes |
+| `GET` | `/api/v1/devices/{id}/telemetry/latest` | Protected (Scoped) | Fetch latest telemetry record (`O(1)` snapshot) |
+| `GET` | `/api/v1/devices/{id}/telemetry/history` | Protected (Scoped) | Query time-series telemetry (raw or 1m/5m/1h rollups) |
+| `GET` | `/api/v1/devices/{id}/telemetry/export` | Protected (Scoped) | Stream CSV or JSON historical dataset |
+| `GET` | `/api/v1/telemetry/stats` | Public / Protected | Query total telemetry storage count & retention stats |
+| `POST` | `/api/v1/telemetry/prune` | Protected | Trigger on-demand retention pruning to cap |
+| `GET` | `/api/v1/telemetry/stream` | Protected | Real-Time Server-Sent Events (SSE) stream (`?token=`) |
+| `POST` | `/api/v1/devices/{id}/commands` | Protected | Dispatch downlink hardware actuation command |
+| `GET` | `/api/v1/devices/{id}/commands` | Protected | Query recent downlink command audit trail |
+| `POST` | `/api/v1/devices/{id}/command_ack` | Public / Device Token | Downlink command acknowledgment receipt |
+| `POST` | `/api/v1/devices/{id}/token` | Protected | Generate / rotate device authentication token |
+| `POST` | `/api/v1/ota/firmware` | Protected | Upload `.bin` firmware binary for OTA distribution |
+| `GET` | `/api/v1/ota/firmware/{file}` | Public / Device Token | Serve compiled firmware binary to edge ESP32 |
+| `POST` | `/api/v1/devices/{id}/ota` | Protected | Trigger wireless Over-The-Air flashing sequence |
+| `GET` | `/api/v1/notifications/channels` | Protected | List alert notification webhook channels |
+| `POST` | `/api/v1/notifications/channels` | Protected | Register Slack, Discord, or generic webhook channel |
+| `DELETE` | `/api/v1/notifications/channels/{id}` | Protected | Remove alert notification channel |
+| `POST` | `/api/v1/notifications/test` | Protected | Dispatch test ping to notification channel |
 
 ---
 

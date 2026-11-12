@@ -80,10 +80,18 @@ The backend implements an automatic **dual-mode operational fallback**:
 
 Base URL: `http://localhost:8080`
 
-### Authentication & JWT Security
-Protected management, deletion, and threshold configuration endpoints support two authentication modes:
-- **JWT Bearer Token**: Standard HMAC-SHA256 (HS256) JWT issued via `/api/v1/auth/login`. Header: `Authorization: Bearer <jwt_token>`.
-- **API Key**: Static secret for automation scripts and microcontrollers. Header: `X-API-Key: <ADMIN_API_KEY>` or `Authorization: Bearer <ADMIN_API_KEY>`.
+### Authentication, JWT Precedence & Tenant Isolation
+All sensitive management, streaming, configuration, and telemetry query endpoints enforce role-based access control (RBAC):
+- **User JWT Authorization Precedence**: Signed HMAC-SHA256 (HS256) session tokens issued via `/api/v1/auth/login` or `/api/v1/auth/register`. When both a JWT token and a static API key are present (e.g. via headers or query parameters), the backend **strictly prioritizes the signed user JWT claims** over any static API key, preventing unauthorized privilege escalation.
+  - Header: `Authorization: Bearer <jwt_token>`
+  - Query Parameter: `?token=<jwt_token>` (Supported on SSE `/api/v1/telemetry/stream`)
+- **API Key Authentication**: Static secret for automation scripts and backend-to-backend tooling.
+  - Header: `X-API-Key: <ADMIN_API_KEY>` or `Authorization: Bearer <ADMIN_API_KEY>`
+  - Query Parameter: `?api_key=<ADMIN_API_KEY>`
+- **Tenant Isolation & Resource Ownership**:
+  - Regular users (`role: user`) are strictly restricted to entities in workspaces they own (`owner_id = user.id`).
+  - Calls to list devices, channels, rules, alarms, or query telemetry automatically filter or validate tenant ownership against the caller's authorized workspace list. Attempting to query or modify resources belonging to another tenant returns `403 Forbidden`.
+  - Platform administrators (`role: admin`) retain supervisory oversight across all workspaces.
 - **Default Dev Credentials**:
   - Username: `admin` | Password: `admin123` (configurable via `ADMIN_USERNAME` / `ADMIN_PASSWORD`)
   - API Key: `iot_admin_secret_key_2026` (configurable via `ADMIN_API_KEY`)
@@ -270,7 +278,9 @@ Creates a new tenant workspace stamped with the caller's owner ID, name, and ema
 ```
 
 #### `DELETE /api/v1/tenants/{id}` *(Protected)*
-Deletes a tenant workspace and performs cascading cleanup of all associated devices, channels, and telemetry records. Regular users can only delete workspaces they own; administrators have permission to delete any workspace.
+Deletes a tenant workspace and performs cascading cleanup of all associated devices, channels, and telemetry records.
+- **Ownership Verification**: Regular users can only delete workspaces they created (`owner_id = user.id`).
+- **System Workspace Safeguard**: Regular users are strictly prevented from deleting system or default workspaces (e.g. `default-org` or `a0000000-0000-0000-0000-000000000001`). Only platform administrators can delete these workspaces.
 
 **Response (200 OK):**
 ```json
@@ -285,7 +295,7 @@ Deletes a tenant workspace and performs cascading cleanup of all associated devi
 
 ### 5. Channel Management
 
-#### `GET /api/v1/channels`
+#### `GET /api/v1/channels` *(Protected / Scoped)*
 Lists all logical telemetry channels. Supports optional `?tenant_id=...` filter.
 
 **Response (200 OK):**
@@ -306,7 +316,7 @@ Lists all logical telemetry channels. Supports optional `?tenant_id=...` filter.
 }
 ```
 
-#### `POST /api/v1/channels`
+#### `POST /api/v1/channels` *(Protected / Scoped)*
 Registers a new telemetry channel / MQTT topic group.
 
 **Request Body:**
@@ -335,7 +345,7 @@ Deletes a telemetry channel from memory cache and TimescaleDB.
 
 ### 6. Device Management
 
-#### `GET /api/v1/devices`
+#### `GET /api/v1/devices` *(Protected / Scoped)*
 List all edge devices registered across the platform or filtered by tenant.
 
 **Query Parameters:**
@@ -364,7 +374,7 @@ List all edge devices registered across the platform or filtered by tenant.
 }
 ```
 
-#### `DELETE /api/v1/devices/{id}`
+#### `DELETE /api/v1/devices/{id}` *(Protected / Scoped)*
 Deletes a device from the database/cache and purges its historical and latest telemetry.
 
 **Response (200 OK):**
@@ -375,7 +385,7 @@ Deletes a device from the database/cache and purges its historical and latest te
 }
 ```
 
-#### `POST /api/v1/devices/reset`
+#### `POST /api/v1/devices/reset` *(Protected - Admin Only)*
 Purges all devices and telemetry records, restoring a clean workspace.
 
 **Response (200 OK):**
@@ -393,7 +403,7 @@ Purges all devices and telemetry records, restoring a clean workspace.
 Dynamic, JSON-defined safety rules that continuously guard against threshold violations.
 > **Zero Hardcoded Logic**: Rules are evaluated dynamically (`evaluateCondition`) against incoming payload keys (`temperature_c`, `humidity_pct`, `wifi_rssi`) using operators `>`, `>=`, `<`, `<=`, `==`, `!=`.
 
-#### `GET /api/v1/rules`
+#### `GET /api/v1/rules` *(Protected / Scoped)*
 Lists configured threshold rules. Supports optional `?tenant_id=...` filter.
 
 **Response (200 OK):**
@@ -416,7 +426,7 @@ Lists configured threshold rules. Supports optional `?tenant_id=...` filter.
 }
 ```
 
-#### `POST /api/v1/rules` *(Protected)*
+#### `POST /api/v1/rules` *(Protected / Scoped)*
 Creates a new dynamic guardrail threshold rule.
 
 **Request Body:**
@@ -432,7 +442,7 @@ Creates a new dynamic guardrail threshold rule.
 }
 ```
 
-#### `DELETE /api/v1/rules/{id}` *(Protected)*
+#### `DELETE /api/v1/rules/{id}` *(Protected / Scoped)*
 Deletes a guardrail rule from memory cache and TimescaleDB.
 
 ---
@@ -444,7 +454,7 @@ Alarms are generated automatically during ingestion (`ProcessTelemetry`) across 
 - **`ACKNOWLEDGED`**: Operator acknowledges active alarm in UI without clearing violation state.
 - **`RESOLVED`**: Automatically resolved when telemetry normalizes below threshold, or manually resolved via API.
 
-#### `GET /api/v1/alarms`
+#### `GET /api/v1/alarms` *(Protected / Scoped)*
 Lists active or historical alarms. Supports `?tenant_id=...` and `?status=OPEN|RESOLVED` filters.
 
 **Response (200 OK):**
@@ -482,7 +492,7 @@ Purges an alarm record from history.
 
 ### 9. Telemetry Queries
 
-#### `GET /api/v1/devices/{id}/telemetry/latest`
+#### `GET /api/v1/devices/{id}/telemetry/latest` *(Protected / Scoped)*
 Fetches the most recent telemetry packet for a specific device from the $O(1)$ snapshot cache.
 
 **Response (200 OK):**
@@ -501,7 +511,7 @@ Fetches the most recent telemetry packet for a specific device from the $O(1)$ s
 }
 ```
 
-#### `GET /api/v1/devices/{id}/telemetry/history`
+#### `GET /api/v1/devices/{id}/telemetry/history` *(Protected / Scoped)*
 Queries time-series telemetry records from the TimescaleDB hypertable.
 
 **Query Parameters:**
@@ -569,15 +579,17 @@ Allows posting sensor data via HTTP REST as an alternative to MQTT (useful for w
 
 ### 11. Zero-Latency Real-Time Streaming (SSE)
 
-#### `GET /api/v1/telemetry/stream`
-Establishes an HTTP Server-Sent Events (SSE) connection streaming real-time events directly to UI clients with zero polling latency.
+#### `GET /api/v1/telemetry/stream` *(Protected)*
+Establishes an authenticated HTTP Server-Sent Events (SSE) connection streaming real-time events directly to UI clients with zero polling latency. Unauthenticated connection attempts receive `401 Unauthorized`.
 
+* **Authentication:** Pass JWT via `Authorization: Bearer <jwt>` or query param `?token=<jwt>` (or `X-API-Key: <key>` / `?api_key=<key>`).
 * **Headers:** `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`.
 * **Heartbeat:** Automated 15-second ping (`:keepalive\n\n`) preventing proxy timeouts.
 * **Events Broadcasted:**
   * `event: telemetry` — Fired immediately upon ingestion of any sensor packet.
   * `event: alarm` — Fired when a guardrail rule triggers or resolves.
   * `event: command_ack` — Fired when an edge node acknowledges a downlink command.
+  * `event: device_status` — Fired when an edge device reports status changes or times out.
 
 ---
 
@@ -640,7 +652,7 @@ Sends a test notification ping to verify webhook connectivity.
 
 ### 14. Historical Telemetry Export (CSV & JSON)
 
-#### `GET /api/v1/devices/{id}/telemetry/export`
+#### `GET /api/v1/devices/{id}/telemetry/export` *(Protected / Scoped)*
 Streams historical telemetry directly as downloadable attachments for offline analytics or audit reports.
 
 **Query Parameters:**
@@ -669,12 +681,47 @@ Dispatches a downlink OTA firmware upgrade command to the target device.
 
 ---
 
+### 16. Telemetry Retention & Pruning Engine
+
+Ensures hypertable capacity constraints are enforced without degrading write throughput by limiting total raw records (default 10,000 max).
+
+#### `GET /api/v1/telemetry/stats`
+Returns global telemetry storage statistics and current retention limits.
+
+**Response (200 OK):**
+```json
+{
+  "total_records": 3411,
+  "max_records": 10000,
+  "storage_mode": "timescaledb"
+}
+```
+
+#### `POST /api/v1/telemetry/prune` *(Protected)*
+Triggers on-demand pruning to purge records exceeding the retention threshold.
+
+**Query Parameters:**
+- `max_records`: Optional integer to override the retention cap for this prune run.
+
+**Response (200 OK):**
+```json
+{
+  "message": "prune complete",
+  "deleted": 150,
+  "max_records": 10000
+}
+```
+
+---
+
 ## 📡 MQTT Ingestion Pipeline
 
 ### Subscribed Topics
 1. `devices/+/telemetry` — Standard edge topic where wildcard `+` is the `device_id`.
 2. `tenants/+/devices/+/telemetry` — Multi-tenant topic with explicit tenant UUID.
-3. `iot/telemetry` — Legacy broadcast topic.
+3. `devices/+/status` — Device state events and MQTT Last Will & Testament (LWT) payloads (`online`/`offline`).
+4. `tenants/+/devices/+/status` — Multi-tenant device state and LWT topic.
+5. `iot/telemetry` — Legacy broadcast topic.
 
 ### Payload Specification
 ESP32 firmware publishes JSON at 5-second intervals with QoS 1:
@@ -782,3 +829,5 @@ Automated CI executes via **GitHub Actions** (`.github/workflows/ci.yml`) on eve
 | `JWT_SECRET` | `iot_platform_secret_jwt_key_2026_super_secure` | HMAC-SHA256 signing secret for session JWTs |
 | `ADMIN_USERNAME` | `admin` | Default platform administrator username |
 | `ADMIN_PASSWORD` | `admin123` | Default platform administrator password |
+| `MAX_TELEMETRY_RECORDS` | `10000` | Maximum raw telemetry rows retained across the platform before FIFO pruning |
+| `TELEMETRY_PRUNE_INTERVAL_SEC` | `30` | Interval in seconds for the background telemetry retention pruning worker |

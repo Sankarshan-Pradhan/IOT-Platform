@@ -147,12 +147,26 @@ func main() {
 	// First immediate publish
 	publishAll()
 
+	// Broadcast initial online status for simulated devices
+	for i := 0; i < *numNodes; i++ {
+		deviceID := fmt.Sprintf("esp32-dht22-%02d", i+1)
+		statusTopic := fmt.Sprintf("devices/%s/status", deviceID)
+		client.Publish(statusTopic, 1, true, []byte(`{"status":"online"}`)).Wait()
+		log.Printf("[STATUS] Published online status to %s", statusTopic)
+	}
+
 	for {
 		select {
 		case <-ticker.C:
 			publishAll()
 		case <-sigChan:
-			log.Println("\nStopping ESP32 simulation...")
+			log.Println("\nStopping ESP32 simulation, marking devices offline...")
+			for i := 0; i < *numNodes; i++ {
+				deviceID := fmt.Sprintf("esp32-dht22-%02d", i+1)
+				statusTopic := fmt.Sprintf("devices/%s/status", deviceID)
+				client.Publish(statusTopic, 1, true, []byte(`{"status":"offline"}`)).Wait()
+				log.Printf("[STATUS] Published offline status to %s", statusTopic)
+			}
 			return
 		}
 	}

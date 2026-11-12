@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <HTTPUpdate.h>
 #include <PubSubClient.h>
 #include <DHT.h>
 #include <ArduinoJson.h>
@@ -287,9 +288,47 @@ void onMqttMessage(char* topic, byte* payload, unsigned int length) {
     } else if (strcmp(action, "ota_update") == 0) {
         const char* otaUrl = doc["payload"]["url"] | "";
         const char* newVer = doc["payload"]["version"] | "latest";
-        snprintf(resultMsg, sizeof(resultMsg), "OTA Flash initiated to version %s from %s", newVer, otaUrl);
-        Serial.printf("[OTA] %s\n", resultMsg);
-        blinkLED(5, 50);
+        if (strlen(otaUrl) == 0) {
+            snprintf(resultMsg, sizeof(resultMsg), "OTA Failed: missing firmware download URL");
+            success = false;
+        } else {
+            snprintf(resultMsg, sizeof(resultMsg), "OTA Flash started: version %s from %s", newVer, otaUrl);
+            Serial.printf("[OTA] %s\n", resultMsg);
+
+            // Dispatch pre-flash acknowledgment so UI receives confirmation
+            StaticJsonDocument<256> preAck;
+            preAck["command_id"] = cmdId;
+            preAck["device_id"]  = DEVICE_ID;
+            preAck["status"]     = "IN_PROGRESS";
+            preAck["result"]     = resultMsg;
+            char preAckBuf[256];
+            serializeJson(preAck, preAckBuf);
+            mqttClient.publish(ackTopic, preAckBuf);
+
+            blinkLED(5, 50);
+
+            // Execute wireless HTTP OTA flashing
+            httpUpdate.setLedPin(STATUS_LED_PIN, HIGH);
+            httpUpdate.rebootOnUpdate(true);
+            WiFiClient updateClient;
+            t_httpUpdate_return ret = httpUpdate.update(updateClient, otaUrl);
+
+            switch (ret) {
+                case HTTP_UPDATE_FAILED:
+                    snprintf(resultMsg, sizeof(resultMsg), "OTA Failed (code %d): %s", 
+                             httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+                    Serial.printf("[OTA] %s\n", resultMsg);
+                    success = false;
+                    break;
+                case HTTP_UPDATE_NO_UPDATES:
+                    snprintf(resultMsg, sizeof(resultMsg), "OTA Warning: no updates available");
+                    Serial.printf("[OTA] %s\n", resultMsg);
+                    break;
+                case HTTP_UPDATE_OK:
+                    Serial.println("[OTA] Firmware updated successfully! Board restarting...");
+                    return; // ESP32 reboots automatically
+            }
+        }
     } else {
         snprintf(resultMsg, sizeof(resultMsg), "Unknown or unsupported action '%s'", action);
         success = false;

@@ -15,6 +15,7 @@ import (
 type IngestionProcessor interface {
 	ProcessTelemetry(tenantID, channelID, deviceID string, telemetryTime time.Time, payloadData []byte) error
 	ProcessCommandAck(deviceID string, payloadData []byte) error
+	ProcessDeviceStatus(tenantID, deviceID, status string) error
 }
 
 type MQTTService struct {
@@ -90,6 +91,8 @@ func (s *MQTTService) subscribe() {
 		"iot/telemetry":                                 1,
 		"devices/+/command_ack":                         1,
 		"tenants/+/devices/+/command_ack":               1,
+		"devices/+/status":                              1,
+		"tenants/+/devices/+/status":                    1,
 	}
 
 	for topic, qos := range topics {
@@ -104,6 +107,36 @@ func (s *MQTTService) subscribe() {
 func (s *MQTTService) handleMessage(client paho.Client, msg paho.Message) {
 	topic := msg.Topic()
 	payload := msg.Payload()
+
+	// Handle device online / offline status (LWT and status heartbeats)
+	if strings.HasSuffix(topic, "/status") {
+		parts := strings.Split(topic, "/")
+		var devID, tID string
+		if len(parts) >= 2 && parts[0] == "devices" {
+			devID = parts[1]
+		} else if len(parts) >= 4 && parts[0] == "tenants" {
+			tID = parts[1]
+			devID = parts[3]
+		}
+		statusStr := strings.TrimSpace(string(payload))
+		if strings.HasPrefix(statusStr, "{") {
+			var statusObj struct {
+				Status string `json:"status"`
+			}
+			if err := json.Unmarshal(payload, &statusObj); err == nil && statusObj.Status != "" {
+				statusStr = statusObj.Status
+			}
+		}
+		statusStr = strings.ToLower(statusStr)
+		if statusStr != "online" && statusStr != "offline" {
+			statusStr = "offline"
+		}
+		if s.processor != nil && devID != "" {
+			_ = s.processor.ProcessDeviceStatus(tID, devID, statusStr)
+		}
+		log.Printf("[MQTT] Ingested device status for %s: %s", devID, statusStr)
+		return
+	}
 
 	// Handle command acknowledgments from hardware devices
 	if strings.HasSuffix(topic, "/command_ack") {

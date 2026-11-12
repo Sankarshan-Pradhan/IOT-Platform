@@ -35,7 +35,9 @@ import {
   fetchAlarms, 
   acknowledgeAlarm, 
   resolveAlarm, 
-  deleteAlarm 
+  deleteAlarm,
+  fetchTelemetryStats,
+  triggerTelemetryPrune
 } from '../api';
 import { Sparkles, AlertCircle, Menu, Plus, Trash2, ArrowLeft } from 'lucide-react';
 
@@ -99,6 +101,21 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState(null);
   const [isSSEConnected, setIsSSEConnected] = useState(false);
+  const [telemetryStats, setTelemetryStats] = useState(null);
+  const [isPruning, setIsPruning] = useState(false);
+
+  const handlePruneTelemetry = async () => {
+    setIsPruning(true);
+    try {
+      await triggerTelemetryPrune(10000);
+      const s = await fetchTelemetryStats();
+      if (s) setTelemetryStats(s);
+    } catch (err) {
+      console.warn('[Prune] Failed to prune telemetry:', err);
+    } finally {
+      setIsPruning(false);
+    }
+  };
 
   const selectedDeviceRef = useRef(selectedDeviceId);
   selectedDeviceRef.current = selectedDeviceId;
@@ -109,7 +126,8 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
 
   // Real-Time Server-Sent Events (SSE) Stream Subscriber
   useEffect(() => {
-    const sseUrl = `${import.meta.env.VITE_API_URL || ''}/api/v1/telemetry/stream`;
+    const token = sessionStorage.getItem('iot_jwt_token') || localStorage.getItem('iot_jwt_token');
+    const sseUrl = `${import.meta.env.VITE_API_URL || ''}/api/v1/telemetry/stream${token ? `?token=${encodeURIComponent(token)}` : ''}`;
     let eventSource = null;
 
     try {
@@ -183,6 +201,22 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
         }
       });
 
+      eventSource.addEventListener('device_status', (e) => {
+        try {
+          const statusEvent = JSON.parse(e.data);
+          if (!statusEvent || !statusEvent.device_id) return;
+          setDevices((prev) =>
+            prev.map((d) =>
+              d.device_id === statusEvent.device_id || d.id === statusEvent.device_id
+                ? { ...d, status: statusEvent.status, updated_at: statusEvent.updated_at }
+                : d
+            )
+          );
+        } catch (err) {
+          console.warn('[SSE] Error processing device_status event:', err);
+        }
+      });
+
       eventSource.onerror = () => {
         setIsSSEConnected(false);
       };
@@ -201,9 +235,10 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const loadUserData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      // 1. Healthcheck
-      const h = await fetchHealth();
+      // 1. Healthcheck & Telemetry Storage Stats
+      const [h, stats] = await Promise.all([fetchHealth(), fetchTelemetryStats()]);
       setHealth(h);
+      if (stats) setTelemetryStats(stats);
 
       // 2. Fetch User's Workspaces (User-Scoped)
       const allTenants = await fetchTenants(currentUser?.id || currentUser?.username || '');
@@ -618,6 +653,9 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
               currentUser={currentUser}
               onLogout={onLogout}
               isSSEConnected={isSSEConnected}
+              telemetryStats={telemetryStats}
+              onPruneTelemetry={handlePruneTelemetry}
+              isPruning={isPruning}
             />
           </div>
         </div>

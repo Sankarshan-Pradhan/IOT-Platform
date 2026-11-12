@@ -118,6 +118,9 @@ CREATE INDEX IF NOT EXISTS idx_telemetry_tenant_device_time ON telemetry (tenant
 -- GIN index on jsonb payload for flexible querying into sensor fields
 CREATE INDEX IF NOT EXISTS idx_telemetry_payload ON telemetry USING GIN (payload);
 
+-- Composite index for high-speed retention cutoff checks and time-series ordering
+CREATE INDEX IF NOT EXISTS idx_telemetry_time_created ON telemetry (time DESC, created_at DESC);
+
 -- 4.1 TimescaleDB Continuous Aggregates (1-Minute, 5-Minute, 1-Hour Rollups)
 CREATE MATERIALIZED VIEW IF NOT EXISTS telemetry_1m
 WITH (timescaledb.continuous) AS
@@ -194,6 +197,34 @@ SELECT add_continuous_aggregate_policy('telemetry_1h',
 
 -- 4.3 Retention Policy: Drop raw hypertable chunks older than 30 days
 SELECT add_retention_policy('telemetry', INTERVAL '30 days', if_not_exists => TRUE);
+
+-- 4.4 Global Telemetry Retention: Automated function to keep at most 10,000 newest records
+CREATE OR REPLACE FUNCTION prune_telemetry_records(max_records INTEGER DEFAULT 10000)
+RETURNS INTEGER AS $$
+DECLARE
+    cutoff_time TIMESTAMPTZ;
+    cutoff_created TIMESTAMPTZ;
+    deleted_count INTEGER := 0;
+BEGIN
+    SELECT time, created_at INTO cutoff_time, cutoff_created
+    FROM telemetry
+    ORDER BY time DESC, created_at DESC
+    OFFSET max_records - 1
+    LIMIT 1;
+
+    IF cutoff_time IS NOT NULL THEN
+        WITH deleted AS (
+            DELETE FROM telemetry
+            WHERE time < cutoff_time 
+               OR (time = cutoff_time AND created_at < cutoff_created)
+            RETURNING 1
+        )
+        SELECT COUNT(*) INTO deleted_count FROM deleted;
+    END IF;
+
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
 
 -- 5. Latest Telemetry Table (State cache for real-time dashboard lookups)
 CREATE TABLE IF NOT EXISTS latest_telemetry (
@@ -333,3 +364,32 @@ VALUES (
     TRUE
 )
 ON CONFLICT (id) DO NOTHING;
+
+-- 11. Notification Channels Table (Slack, Discord, generic Webhooks)
+CREATE TABLE IF NOT EXISTS notification_channels (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    type VARCHAR(32) NOT NULL DEFAULT 'webhook',
+    target_url TEXT NOT NULL,
+    severity VARCHAR(32) NOT NULL DEFAULT 'CRITICAL',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_channels_tenant ON notification_channels(tenant_id);
+
+-- 12. Firmware Packages Table (OTA Firmware Binaries)
+CREATE TABLE IF NOT EXISTS firmware_packages (
+    id VARCHAR(64) PRIMARY KEY,
+    version VARCHAR(64) NOT NULL,
+    device_type VARCHAR(64) NOT NULL DEFAULT 'ESP32',
+    filename VARCHAR(255) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    checksum_sha VARCHAR(128) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_version ON firmware_packages(version);

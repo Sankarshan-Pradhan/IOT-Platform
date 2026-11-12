@@ -30,16 +30,38 @@ type NotificationChannel struct {
 // DispatchAlarmNotification fires outbound notifications asynchronously to all enabled alert channels
 func (h *APIHandler) DispatchAlarmNotification(alarm models.Alarm) {
 	go func() {
-		h.mu.RLock()
 		channels := make([]NotificationChannel, 0)
-		for _, ch := range h.memNotificationChannels {
-			if ch.Enabled && (ch.TenantID == alarm.TenantID || ch.TenantID == "" || ch.TenantID == "a0000000-0000-0000-0000-000000000001") {
-				if ch.Severity == "ALL" || strings.EqualFold(ch.Severity, alarm.Severity) {
-					channels = append(channels, ch)
+
+		if h.isDBReady() {
+			rows, err := h.DB.Query(`
+				SELECT id, tenant_id, name, type, target_url, severity, enabled, created_at, updated_at
+				FROM notification_channels
+				WHERE enabled = TRUE AND (tenant_id = $1 OR tenant_id = '' OR tenant_id = 'a0000000-0000-0000-0000-000000000001');
+			`, alarm.TenantID)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var ch NotificationChannel
+					if err := rows.Scan(&ch.ID, &ch.TenantID, &ch.Name, &ch.Type, &ch.TargetURL, &ch.Severity, &ch.Enabled, &ch.CreatedAt, &ch.UpdatedAt); err == nil {
+						if ch.Severity == "ALL" || strings.EqualFold(ch.Severity, alarm.Severity) {
+							channels = append(channels, ch)
+						}
+					}
 				}
 			}
 		}
-		h.mu.RUnlock()
+
+		if len(channels) == 0 {
+			h.mu.RLock()
+			for _, ch := range h.memNotificationChannels {
+				if ch.Enabled && (ch.TenantID == alarm.TenantID || ch.TenantID == "" || ch.TenantID == "a0000000-0000-0000-0000-000000000001") {
+					if ch.Severity == "ALL" || strings.EqualFold(ch.Severity, alarm.Severity) {
+						channels = append(channels, ch)
+					}
+				}
+			}
+			h.mu.RUnlock()
+		}
 
 		if len(channels) == 0 {
 			return
@@ -104,6 +126,30 @@ func (h *APIHandler) DispatchAlarmNotification(alarm models.Alarm) {
 func (h *APIHandler) GetNotificationChannels(w http.ResponseWriter, r *http.Request) {
 	tenantID := r.URL.Query().Get("tenant_id")
 
+	if h.isDBReady() {
+		rows, err := h.DB.Query(`
+			SELECT id, tenant_id, name, type, target_url, severity, enabled, created_at, updated_at
+			FROM notification_channels
+			WHERE ($1 = '' OR tenant_id = $1 OR tenant_id = '')
+			ORDER BY created_at DESC;
+		`, tenantID)
+		if err == nil {
+			defer rows.Close()
+			list := make([]NotificationChannel, 0)
+			for rows.Next() {
+				var ch NotificationChannel
+				if err := rows.Scan(&ch.ID, &ch.TenantID, &ch.Name, &ch.Type, &ch.TargetURL, &ch.Severity, &ch.Enabled, &ch.CreatedAt, &ch.UpdatedAt); err == nil {
+					list = append(list, ch)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"count":    len(list),
+				"channels": list,
+			})
+			return
+		}
+	}
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	list := make([]NotificationChannel, 0)
@@ -153,6 +199,13 @@ func (h *APIHandler) CreateNotificationChannel(w http.ResponseWriter, r *http.Re
 	h.memNotificationChannels[ch.ID] = ch
 	h.mu.Unlock()
 
+	if h.isDBReady() {
+		_, _ = h.DB.Exec(`
+			INSERT INTO notification_channels (id, tenant_id, name, type, target_url, severity, enabled, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+		`, ch.ID, ch.TenantID, ch.Name, ch.Type, ch.TargetURL, ch.Severity, ch.Enabled, ch.CreatedAt, ch.UpdatedAt)
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":  "success",
 		"channel": ch,
@@ -170,6 +223,10 @@ func (h *APIHandler) DeleteNotificationChannel(w http.ResponseWriter, r *http.Re
 	h.mu.Lock()
 	delete(h.memNotificationChannels, id)
 	h.mu.Unlock()
+
+	if h.isDBReady() {
+		_, _ = h.DB.Exec("DELETE FROM notification_channels WHERE id = $1;", id)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"status":  "success",
