@@ -12,6 +12,7 @@ import (
 
 	"iot-backend/backend/handlers"
 	"iot-backend/backend/mqtt"
+	"iot-backend/backend/redis"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -23,6 +24,12 @@ type Config struct {
 	DBUser               string
 	DBPassword           string
 	DBName               string
+	RedisHost            string
+	RedisPort            string
+	RedisPassword        string
+	FCMServerKey         string
+	FCMCredentialsFile   string
+	FCMServiceAccountJSON string
 	MQTTBrokerURL        string
 	MQTTClientID         string
 	ServerPort           string
@@ -68,6 +75,12 @@ func loadConfig() Config {
 		DBUser:               getEnv("POSTGRES_USER", "iot_user"),
 		DBPassword:           getEnv("POSTGRES_PASSWORD", "iot_secure_password"),
 		DBName:               getEnv("POSTGRES_DB", "iot_platform"),
+		RedisHost:            getEnv("REDIS_HOST", "localhost"),
+		RedisPort:            getEnv("REDIS_PORT", "6379"),
+		RedisPassword:        getEnv("REDIS_PASSWORD", ""),
+		FCMServerKey:         getEnv("FCM_SERVER_KEY", ""),
+		FCMCredentialsFile:   getEnv("FCM_CREDENTIALS_FILE", ""),
+		FCMServiceAccountJSON: getEnv("FCM_SERVICE_ACCOUNT_JSON", ""),
 		MQTTBrokerURL:        getEnv("MQTT_BROKER_URL", defaultBrokerURL),
 		MQTTClientID:         getEnv("MQTT_CLIENT_ID", "iot-backend-service"),
 		ServerPort:           getEnv("PORT", "8080"),
@@ -107,6 +120,29 @@ func main() {
 	api := handlers.NewAPIHandler(nil, cfg.AdminAPIKey)
 	api.SetTelemetryRetention(cfg.MaxTelemetryRecords, cfg.PruneIntervalSeconds)
 	log.Printf("[RETENTION] Telemetry retention policy active: max %d records (prune interval: %ds)", cfg.MaxTelemetryRecords, cfg.PruneIntervalSeconds)
+
+	// Initialize Redis High-Speed L1 Cache & Distributed Rate Limiter
+	redisAddr := fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort)
+	cacheSvc := redis.NewCacheService(redisAddr, cfg.RedisPassword, 0)
+	api.SetRedisCache(cacheSvc)
+	api.SetFCMServerKey(cfg.FCMServerKey)
+	api.SetFCMServiceAccount(cfg.FCMCredentialsFile, cfg.FCMServiceAccountJSON)
+	if cacheSvc.CheckConnection() {
+		log.Printf("[REDIS] High-speed L1 cache connected: %s", redisAddr)
+	} else {
+		log.Printf("[REDIS] Notice: Redis not yet reachable at %s. Operating with in-memory L1 cache until service connects.", redisAddr)
+	}
+
+	// Background worker to auto-reconnect Redis if it restarts or becomes available
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !cacheSvc.IsConnected() {
+				_ = cacheSvc.CheckConnection()
+			}
+		}
+	}()
 
 	// Decouple MQTT from DB: initialize MQTT service with decoupled ingestion processor
 	mqttSvc := mqtt.NewMQTTService(cfg.MQTTBrokerURL, cfg.MQTTClientID, api)
@@ -255,6 +291,17 @@ func main() {
 	mux.HandleFunc("POST /api/v1/notifications/channels", api.AuthMiddleware(api.CreateNotificationChannel))
 	mux.HandleFunc("DELETE /api/v1/notifications/channels/{id}", api.AuthMiddleware(api.DeleteNotificationChannel))
 	mux.HandleFunc("POST /api/v1/notifications/test", api.AuthMiddleware(api.TestNotificationChannel))
+
+	// Firebase Cloud Messaging (FCM) Mobile Push Alerts
+	mux.HandleFunc("GET /api/v1/notifications/fcm/config", api.GetFCMConfig)
+	mux.HandleFunc("GET /api/v1/notifications/fcm/tokens", api.AuthMiddleware(api.GetFCMTokens))
+	mux.HandleFunc("POST /api/v1/notifications/fcm/token", api.AuthMiddleware(api.RegisterFCMToken))
+	mux.HandleFunc("DELETE /api/v1/notifications/fcm/token/{id}", api.AuthMiddleware(api.DeleteFCMToken))
+	mux.HandleFunc("POST /api/v1/notifications/fcm/test", api.AuthMiddleware(api.TestFCMPush))
+
+	// Redis L1 High-Speed Cache & In-Memory Performance Metrics
+	mux.HandleFunc("GET /api/v1/system/cache-stats", api.GetSystemCacheStats)
+	mux.HandleFunc("POST /api/v1/system/cache-flush", api.AuthMiddleware(api.FlushSystemCache))
 
 	// Healthcheck & Root
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

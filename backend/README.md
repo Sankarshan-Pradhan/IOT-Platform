@@ -714,6 +714,80 @@ Triggers on-demand pruning to purge records exceeding the retention threshold.
 
 ---
 
+### 17. Distributed Redis Caching & Rate Limiting
+
+The backend uses a dedicated **Redis 7** instance for sub-millisecond data reads, sliding-window IP rate limiting, and session caching.
+
+#### `GET /api/v1/system/cache-stats` *(Protected)*
+Returns real-time Redis cache metrics including memory usage, uptime, total keys, hits, misses, and hit ratio.
+
+**Response (200 OK):**
+```json
+{
+  "enabled": true,
+  "connected": true,
+  "hit_ratio": 94.2,
+  "keys_count": 48,
+  "memory_used": "1.85M",
+  "total_hits": 1284,
+  "total_misses": 79,
+  "uptime_seconds": 18200
+}
+```
+
+#### `POST /api/v1/system/cache-flush` *(Protected - Admin Only)*
+Purges all distributed Redis cache keys across the platform without affecting persistent database storage.
+
+**Response (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "Redis cache flushed successfully"
+}
+```
+
+---
+
+### 18. Google Firebase Cloud Messaging (FCM) HTTP v1 API
+
+Dispatches real-time background push alerts to operators' mobile devices (iOS / Android / Web) using Google Cloud's modern HTTP v1 API (`https://fcm.googleapis.com/v1/projects/{project_id}/messages:send`).
+
+#### `GET /api/v1/notifications/fcm/config` *(Protected)*
+Fetches public FCM service status and delivery mode.
+
+**Response (200 OK):**
+```json
+{
+  "configured": true,
+  "delivery_mode": "production_google_http_v1",
+  "project_id": "iot-platform-production",
+  "client_email": "firebase-adminsdk@iot-platform-production.iam.gserviceaccount.com"
+}
+```
+
+#### `GET /api/v1/notifications/fcm/tokens` *(Protected / Scoped)*
+Lists registered mobile and browser push notification tokens for the caller's workspace.
+
+#### `POST /api/v1/notifications/fcm/token` *(Protected)*
+Registers a new FCM device token for background push delivery.
+
+**Request Body:**
+```json
+{
+  "token": "eXamPLe_fCm_dEvIcE_tOkEn...",
+  "device_name": "Operator iPhone 15 Pro",
+  "platform": "iOS"
+}
+```
+
+#### `DELETE /api/v1/notifications/fcm/token/{id}` *(Protected)*
+Unregisters a push token.
+
+#### `POST /api/v1/notifications/fcm/test` *(Protected)*
+Dispatches an instant test push notification payload through the Google HTTP v1 pipeline to all registered tokens. Automatic token pruning purges stale tokens if Google responds with `404` or `UNREGISTERED`.
+
+---
+
 ## 📡 MQTT Ingestion Pipeline
 
 ### Subscribed Topics
@@ -831,3 +905,9 @@ Automated CI executes via **GitHub Actions** (`.github/workflows/ci.yml`) on eve
 | `ADMIN_PASSWORD` | `admin123` | Default platform administrator password |
 | `MAX_TELEMETRY_RECORDS` | `10000` | Maximum raw telemetry rows retained across the platform before FIFO pruning |
 | `TELEMETRY_PRUNE_INTERVAL_SEC` | `30` | Interval in seconds for the background telemetry retention pruning worker |
+| `REDIS_ADDR` | `localhost:6379` | Redis host:port connection address |
+| `REDIS_PASSWORD` | `""` | Redis connection password (optional) |
+| `REDIS_DB` | `0` | Redis database index number |
+| `FCM_CREDENTIALS_FILE` | `infra/fcm/service-account.json` | Path to Google Cloud Firebase service account JSON |
+| `FCM_SERVICE_ACCOUNT_JSON` | `""` | Inline Google Cloud service account JSON string |
+| `FCM_SERVER_KEY` | `""` | Legacy FCM server key (fallback compatibility mode) |

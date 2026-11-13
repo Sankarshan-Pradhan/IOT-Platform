@@ -20,7 +20,9 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
    - $O(1)$ `latest_telemetry` snapshot cache table synchronized via atomic SQL triggers.
 
 3. **[Go Backend Service Architecture](../backend/README.md)**
-   - REST API specifications (`/health`, `/api/v1/auth/*`, `/api/v1/users`, `/api/v1/tenants`, `/api/v1/channels`, `/api/v1/devices`, `/api/v1/rules`, `/api/v1/alarms`, `/api/v1/telemetry/*`, `/api/v1/notifications/*`, `/api/v1/ota/*`).
+   - REST API specifications (`/health`, `/api/v1/auth/*`, `/api/v1/users`, `/api/v1/tenants`, `/api/v1/channels`, `/api/v1/devices`, `/api/v1/rules`, `/api/v1/alarms`, `/api/v1/telemetry/*`, `/api/v1/notifications/*`, `/api/v1/ota/*`, `/api/v1/system/cache-*`).
+   - Distributed Redis L1 cache for sub-millisecond telemetry snapshots, continuous rollups, and IP rate limiting.
+   - Google Firebase Cloud Messaging (FCM) HTTP v1 API with RS256 OAuth2 signing and automatic stale token pruning.
    - Role-Based Access Control (RBAC) & Tenant Scoping: User JWT sessions strictly take precedence over static API keys; non-admins are scoped strictly to owned workspaces.
    - Authenticated Server-Sent Events (SSE) streaming with `?token=` query validation and automated 15s keep-alive pings.
    - 10k Telemetry Retention Engine with `GET /api/v1/telemetry/stats` and on-demand `POST /api/v1/telemetry/prune`.
@@ -28,17 +30,21 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
    - Downlink device command actuation (`POST /api/v1/devices/{id}/commands`) and OTA binary server.
    - Paho MQTT subscriber & publisher with zero-drop auto-reconnect worker.
    - Resilient in-memory fallback cache maintaining parity when TimescaleDB is offline.
-   - 19-test unit test suite (`go test -v ./backend/...`) and GitHub Actions CI workflow.
+   - 20-test unit test suite (`go test -v ./backend/...`) and GitHub Actions CI workflow.
 
 4. **[Frontend Dashboard & Edge Management UI](../frontend/README.md)**
    - Dedicated initial Login & Registration gate portal (`AuthScreen.jsx`).
    - Automatic role-based routing: Admin Supervisory Monitoring vs. Operator Workspace Cockpit.
+   - Auto-scaling Radial Gauges (`MetricGauges.jsx`) with dynamic headroom padding, clean steps, and emerald `[AUTO]` badge.
+   - User View Persistence: Card/Gauge toggle and Chart type selections saved across sessions in `localStorage`.
+   - Distributed Redis Cache Widget (`RedisCacheWidget.jsx`) displaying live hit ratio, memory usage, and 1-click purge.
+   - Mobile Push Notification Manager (`FCMMobileAlerts.jsx`) with live connection badges, device token registration, and simulated push testing.
    - Storage Retention Meter UI badge (`Storage: X / 10,000 (Y%)`) with live capacity color coding and manual "Prune Now" trigger.
    - Authenticated SSE streaming via `?token=` and secure JWT Bearer authorization (hardcoded fallback secrets removed).
    - Real-time device status updates (`device_status` SSE) switching badges between green and offline gray without reload.
    - Two-way Device Control Panel (`DeviceControlPanel.jsx`) for relays, LEDs, sampling intervals, and remote reboot.
    - Outbound Alert Channels manager in `GuardrailsModal.jsx` for Discord, Slack, and generic Webhooks.
-   - Dual Y-Axis Chart.js line charts with 1m/5m/1h rollup pills and direct CSV/JSON download buttons.
+   - Dual Y-Axis Chart.js line/area/stepped/bar charts with 1m/5m/1h rollup pills and direct CSV/JSON download buttons.
    - Animated `Live SSE (0ms)` real-time streaming badge with automatic polling fallback.
 
 5. **[ESP32 Edge Firmware & Simulator](../firmware/README.md)**
@@ -50,7 +56,8 @@ Comprehensive architecture specifications, hardware wiring diagrams, database sc
    - Multi-node Go telemetry simulator (`simulate_nodes.go`) supporting synthetic edge fleets with two-way command ACKs.
 
 6. **[Infrastructure & Containerization](../infra/README.md)**
-   - Multi-container orchestration definition for TimescaleDB, Mosquitto, Go Backend, and React Frontend.
+   - Multi-container orchestration definition for TimescaleDB, Mosquitto, Redis 7, Go Backend, and React Frontend.
+   - Google Firebase Cloud Messaging Service Account configuration (`infra/fcm/`).
    - Multi-stage Docker builds and Nginx reverse proxy configuration.
    - Single-command startup: `docker compose up --build`.
 

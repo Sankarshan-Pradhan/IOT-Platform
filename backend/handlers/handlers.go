@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"iot-backend/backend/models"
+	"iot-backend/backend/redis"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -50,7 +51,15 @@ type APIHandler struct {
 	sseBroker     *SSEBroker
 	memNotificationChannels map[string]NotificationChannel
 	memFirmwares  map[string]models.Firmware
-	maxTelemetryRecords     int
+	memFCMTokens  map[string]FCMDeviceToken
+	redisCache    *redis.CacheService
+	fcmServerKey          string
+	fcmCredentialsFile    string
+	fcmServiceAccountJSON string
+	fcmAccessToken        string
+	fcmTokenExpiry        time.Time
+	fcmProjectID          string
+	maxTelemetryRecords   int
 	pruneIntervalSec        int
 	loginLimiter            *ipRateLimiter
 }
@@ -206,6 +215,8 @@ func NewAPIHandler(db *sql.DB, adminAPIKey string) *APIHandler {
 		sseBroker:   NewSSEBroker(),
 		memNotificationChannels: make(map[string]NotificationChannel),
 		memFirmwares:            make(map[string]models.Firmware),
+		memFCMTokens:            make(map[string]FCMDeviceToken),
+		fcmServerKey:            os.Getenv("FCM_SERVER_KEY"),
 		maxTelemetryRecords:     10000,
 		pruneIntervalSec:        30,
 		loginLimiter:            newIPRateLimiter(20, 1*time.Minute),
@@ -234,6 +245,64 @@ func (h *APIHandler) SetMQTTPublisher(pub MQTTPublisher) {
 	defer h.mu.Unlock()
 	h.mqttPub = pub
 }
+
+func (h *APIHandler) SetRedisCache(rc *redis.CacheService) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.redisCache = rc
+}
+
+func (h *APIHandler) SetFCMServerKey(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fcmServerKey = strings.TrimSpace(key)
+}
+
+func (h *APIHandler) SetFCMServiceAccount(credsFile, jsonContent string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fcmCredentialsFile = strings.TrimSpace(credsFile)
+	h.fcmServiceAccountJSON = strings.TrimSpace(jsonContent)
+}
+
+// GetSystemCacheStats handles GET /api/v1/system/cache-stats
+func (h *APIHandler) GetSystemCacheStats(w http.ResponseWriter, r *http.Request) {
+	if h.redisCache == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"connected":         false,
+			"server_address":    "none",
+			"storage_mode":      "memory_fallback",
+			"total_keys":        0,
+			"memory_used_human": "N/A",
+			"cache_hits":        0,
+			"cache_misses":      0,
+			"total_requests":    0,
+			"hit_ratio_percent": "0.0%",
+			"uptime_seconds":    0,
+		})
+		return
+	}
+	stats := h.redisCache.GetStats()
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// FlushSystemCache handles POST /api/v1/system/cache-flush
+func (h *APIHandler) FlushSystemCache(w http.ResponseWriter, r *http.Request) {
+	caller := h.getCaller(r)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	if h.redisCache != nil {
+		_ = h.redisCache.FlushAll()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":    "success",
+		"message":   "Redis L1 in-memory cache flushed successfully",
+		"timestamp": time.Now().UTC(),
+	})
+}
+
 
 func (h *APIHandler) ensureSchemaMigrations() {
 	if h.DB == nil {
@@ -300,6 +369,20 @@ func (h *APIHandler) ensureSchemaMigrations() {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 		CREATE INDEX IF NOT EXISTS idx_firmware_version ON firmware_packages(version);
+
+		CREATE TABLE IF NOT EXISTS fcm_tokens (
+			id VARCHAR(64) PRIMARY KEY,
+			user_id VARCHAR(64) NOT NULL,
+			tenant_id VARCHAR(64),
+			device_name VARCHAR(128) NOT NULL,
+			fcm_token TEXT NOT NULL UNIQUE,
+			platform VARCHAR(32) NOT NULL DEFAULT 'web',
+			enabled BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_fcm_tokens_user ON fcm_tokens(user_id);
+		CREATE INDEX IF NOT EXISTS idx_fcm_tokens_tenant ON fcm_tokens(tenant_id);
 	`)
 
 	adminHash, _ := bcrypt.GenerateFromPassword([]byte(h.AdminPassword), bcrypt.DefaultCost)
@@ -1459,6 +1542,18 @@ func (h *APIHandler) GetLatestTelemetry(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// 1. High-Performance Redis L1 Cache Lookup (O(1) memory read)
+	if h.redisCache != nil && err == nil {
+		if cachedBytes, found := h.redisCache.GetLatestTelemetry(device.TenantID, device.DeviceID); found {
+			var lt models.LatestTelemetry
+			if json.Unmarshal(cachedBytes, &lt) == nil {
+				w.Header().Set("X-Cache", "HIT-REDIS")
+				writeJSON(w, http.StatusOK, lt)
+				return
+			}
+		}
+	}
+
 	if h.isDBReady() {
 		if err == nil {
 			query := `
@@ -1474,6 +1569,12 @@ func (h *APIHandler) GetLatestTelemetry(w http.ResponseWriter, r *http.Request) 
 			)
 			if err == nil {
 				lt.Payload = json.RawMessage(payloadBytes)
+				// Backfill Redis cache on DB read
+				if h.redisCache != nil {
+					ltData, _ := json.Marshal(lt)
+					_ = h.redisCache.SetLatestTelemetry(device.TenantID, device.DeviceID, ltData, 24*time.Hour)
+				}
+				w.Header().Set("X-Cache", "MISS-DB")
 				writeJSON(w, http.StatusOK, lt)
 				return
 			}
@@ -1908,6 +2009,13 @@ func (h *APIHandler) ProcessTelemetry(tenantID, channelID, deviceID string, tele
 		UpdatedAt: time.Now().UTC(),
 	}
 	h.memLatest[deviceID] = lt
+
+	// Asynchronously update Redis L1 Cache
+	if h.redisCache != nil {
+		if ltBytes, err := json.Marshal(lt); err == nil {
+			_ = h.redisCache.SetLatestTelemetry(tenantID, deviceID, ltBytes, 24*time.Hour)
+		}
+	}
 
 	record := models.TelemetryRecord{
 		Time:      telemetryTime,
@@ -2918,9 +3026,17 @@ func (h *APIHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce IP-based rate limiting on authentication attempts
-	if h.loginLimiter != nil {
-		clientIP := getClientIP(r)
+	// Enforce IP-based rate limiting on authentication attempts (via Redis distributed engine or in-memory fallback)
+	clientIP := getClientIP(r)
+	if h.redisCache != nil {
+		allowed, remaining, _ := h.redisCache.CheckRateLimit("login:"+clientIP, 20, 1*time.Minute)
+		w.Header().Set("X-RateLimit-Limit", "20")
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		if !allowed {
+			writeError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait 1 minute before trying again.")
+			return
+		}
+	} else if h.loginLimiter != nil {
 		if !h.loginLimiter.allow(clientIP) {
 			writeError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait 1 minute before trying again.")
 			return

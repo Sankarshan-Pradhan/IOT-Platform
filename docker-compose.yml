@@ -39,6 +39,18 @@ services:
     networks:
       - iot_network
 
+  redis:
+    image: redis:7-alpine
+    container_name: iot_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - iot_network
+
   backend:
     build:
       context: .
@@ -51,6 +63,8 @@ services:
         condition: service_healthy
       mosquitto:
         condition: service_started
+      redis:
+        condition: service_started
     environment:
       PORT: "8080"
       POSTGRES_HOST: postgres
@@ -58,6 +72,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-iot_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot_secure_password}
       POSTGRES_DB: ${POSTGRES_DB:-iot_platform}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      FCM_SERVER_KEY: "${FCM_SERVER_KEY:-}"
+      FCM_CREDENTIALS_FILE: "${FCM_CREDENTIALS_FILE:-/etc/fcm/service-account.json}"
+      FCM_SERVICE_ACCOUNT_JSON: "${FCM_SERVICE_ACCOUNT_JSON:-}"
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"
       MQTT_BROKER_URL: "tcp://mosquitto:1883"
@@ -68,6 +88,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:-iot_jwt_super_secret_key_2026}"
       MAX_TELEMETRY_RECORDS: "${MAX_TELEMETRY_RECORDS:-10000}"
       TELEMETRY_PRUNE_INTERVAL_SEC: "${TELEMETRY_PRUNE_INTERVAL_SEC:-30}"
+    volumes:
+      - ./infra/fcm:/etc/fcm:ro
     ports:
       - "8080:8080"
     healthcheck:
@@ -96,6 +118,8 @@ services:
 volumes:
   pgdata:
   mosquitto_data:
+  redis_data:
+
 
 networks:
   iot_network:

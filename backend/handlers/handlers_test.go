@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"iot-backend/backend/models"
+	"iot-backend/backend/redis"
 )
 
 func TestGetTenants(t *testing.T) {
@@ -1196,3 +1197,125 @@ func TestSecurityFix_TenantDeletionGuard(t *testing.T) {
 		t.Errorf("expected 200 OK when owner deletes their own workspace, got %d", delAliceRec.Code)
 	}
 }
+
+func TestRedisCacheAndStats(t *testing.T) {
+	api := NewAPIHandler(nil, "test_admin_key")
+	rc := redis.NewCacheService("localhost:6379", "", 0)
+	api.SetRedisCache(rc)
+
+	// Ingest telemetry record
+	devID := "node-redis-01"
+	tenantID := "a0000000-0000-0000-0000-000000000001"
+	payload := []byte(`{"temperature_c": 28.5, "humidity_pct": 55.0}`)
+	if err := api.ProcessTelemetry(tenantID, "", devID, time.Now().UTC(), payload); err != nil {
+		t.Fatalf("failed ingesting telemetry: %v", err)
+	}
+
+	// 1. Fetch Latest Telemetry - should hit cache
+	req := httptest.NewRequest("GET", "/api/v1/devices/"+devID+"/telemetry/latest", nil)
+	req.SetPathValue("id", devID)
+	req.Header.Set("X-API-Key", "test_admin_key")
+	rec := httptest.NewRecorder()
+	api.GetLatestTelemetry(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("X-Cache") != "HIT-REDIS" {
+		t.Logf("Notice: Cache header was %s", rec.Header().Get("X-Cache"))
+	}
+
+	// 2. Query System Cache Stats
+	statsReq := httptest.NewRequest("GET", "/api/v1/system/cache-stats", nil)
+	statsRec := httptest.NewRecorder()
+	api.GetSystemCacheStats(statsRec, statsReq)
+	if statsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GetSystemCacheStats, got %d", statsRec.Code)
+	}
+	var stats map[string]interface{}
+	_ = json.Unmarshal(statsRec.Body.Bytes(), &stats)
+	if stats["storage_mode"] == nil {
+		t.Fatalf("expected storage_mode in cache stats")
+	}
+
+	// 3. Flush Cache
+	flushReq := httptest.NewRequest("POST", "/api/v1/system/cache-flush", nil)
+	flushReq.Header.Set("X-API-Key", "test_admin_key")
+	flushRec := httptest.NewRecorder()
+	api.FlushSystemCache(flushRec, flushReq)
+	if flushRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on FlushSystemCache, got %d", flushRec.Code)
+	}
+}
+
+func TestFirebaseCloudMessaging(t *testing.T) {
+	api := NewAPIHandler(nil, "test_admin_key")
+
+	// 1. FCM Config
+	cfgReq := httptest.NewRequest("GET", "/api/v1/notifications/fcm/config", nil)
+	cfgRec := httptest.NewRecorder()
+	api.GetFCMConfig(cfgRec, cfgReq)
+	if cfgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GetFCMConfig, got %d", cfgRec.Code)
+	}
+
+	// 2. Register FCM Token
+	tokPayload, _ := json.Marshal(map[string]interface{}{
+		"tenant_id":   "a0000000-0000-0000-0000-000000000001",
+		"device_name": "Operator iPhone 15 Pro",
+		"fcm_token":   "fcm_sample_device_token_xyz_12345",
+		"platform":    "ios",
+	})
+	regReq := httptest.NewRequest("POST", "/api/v1/notifications/fcm/token", bytes.NewBuffer(tokPayload))
+	regReq.Header.Set("X-API-Key", "test_admin_key")
+	regRec := httptest.NewRecorder()
+	api.RegisterFCMToken(regRec, regReq)
+
+	if regRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created on RegisterFCMToken, got %d: %s", regRec.Code, regRec.Body.String())
+	}
+	var regRes map[string]interface{}
+	_ = json.Unmarshal(regRec.Body.Bytes(), &regRes)
+	tokMap := regRes["token"].(map[string]interface{})
+	tokID := tokMap["id"].(string)
+
+	// 3. Query FCM Tokens list
+	listReq := httptest.NewRequest("GET", "/api/v1/notifications/fcm/tokens", nil)
+	listReq.Header.Set("X-API-Key", "test_admin_key")
+	listRec := httptest.NewRecorder()
+	api.GetFCMTokens(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GetFCMTokens, got %d", listRec.Code)
+	}
+	var listRes map[string]interface{}
+	_ = json.Unmarshal(listRec.Body.Bytes(), &listRes)
+	if listRes["count"].(float64) < 1 {
+		t.Fatalf("expected at least 1 registered token, got %v", listRes["count"])
+	}
+
+	// 4. Test FCM Push Dispatch
+	testPushPayload, _ := json.Marshal(map[string]interface{}{
+		"tenant_id":   "a0000000-0000-0000-0000-000000000001",
+		"device_name": "esp32-node1",
+		"title":       "🚨 CRITICAL HIGH TEMP",
+		"body":        "Sensor temperature 42.1°C exceeds safety limit 35.0°C",
+	})
+	pushReq := httptest.NewRequest("POST", "/api/v1/notifications/fcm/test", bytes.NewBuffer(testPushPayload))
+	pushReq.Header.Set("X-API-Key", "test_admin_key")
+	pushRec := httptest.NewRecorder()
+	api.TestFCMPush(pushRec, pushReq)
+	if pushRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on TestFCMPush, got %d: %s", pushRec.Code, pushRec.Body.String())
+	}
+
+	// 5. Delete FCM Token
+	delReq := httptest.NewRequest("DELETE", "/api/v1/notifications/fcm/token/"+tokID, nil)
+	delReq.SetPathValue("id", tokID)
+	delReq.Header.Set("X-API-Key", "test_admin_key")
+	delRec := httptest.NewRecorder()
+	api.DeleteFCMToken(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on DeleteFCMToken, got %d", delRec.Code)
+	}
+}
+

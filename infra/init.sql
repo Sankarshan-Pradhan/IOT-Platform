@@ -393,3 +393,20 @@ CREATE TABLE IF NOT EXISTS firmware_packages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_firmware_version ON firmware_packages(version);
+
+-- 13. Firebase Cloud Messaging (FCM) Device Tokens & Mobile Alert Subscriptions
+CREATE TABLE IF NOT EXISTS fcm_tokens (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    tenant_id VARCHAR(64),
+    device_name VARCHAR(128) NOT NULL,
+    fcm_token TEXT NOT NULL UNIQUE,
+    platform VARCHAR(32) NOT NULL DEFAULT 'web', -- 'android', 'ios', 'web'
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_fcm_tokens_user ON fcm_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_fcm_tokens_tenant ON fcm_tokens(tenant_id);
+

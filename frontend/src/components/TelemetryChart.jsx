@@ -5,13 +5,21 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
   Filler,
 } from 'chart.js';
-import { Line } from 'react-chartjs-2';
-import { LineChart, Download, Layers } from 'lucide-react';
+import { Line, Bar } from 'react-chartjs-2';
+import { 
+  LineChart, 
+  BarChart3, 
+  Activity, 
+  TrendingUp, 
+  Download, 
+  Layers 
+} from 'lucide-react';
 import { exportTelemetry } from '../api';
 
 ChartJS.register(
@@ -19,6 +27,7 @@ ChartJS.register(
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
   Title,
   Tooltip,
   Legend,
@@ -39,7 +48,17 @@ export default function TelemetryChart({
 }) {
   const [showTemp, setShowTemp] = useState(true);
   const [showHum, setShowHum] = useState(true);
+  const [chartType, setChartType] = useState(() => {
+    return localStorage.getItem('iot_chart_type') || 'line';
+  });
   const [isExporting, setIsExporting] = useState(false);
+
+  const handleSetChartType = (type) => {
+    setChartType(type);
+    try {
+      localStorage.setItem('iot_chart_type', type);
+    } catch (_) {}
+  };
 
   const handleExport = async (format) => {
     if (!deviceId) return;
@@ -78,6 +97,12 @@ export default function TelemetryChart({
   const tempValues2 = secondDeviceHistory.map(getTemperature);
   const humValues2 = secondDeviceHistory.map(getHumidity);
 
+  const isStepped = chartType === 'stepped';
+  const isArea = chartType === 'area';
+  const isBar = chartType === 'bar';
+  const tension = isStepped ? 0 : 0.35;
+  const fill = isArea || chartType === 'line';
+
   const datasets = [];
 
   if (isCompareMode) {
@@ -86,23 +111,29 @@ export default function TelemetryChart({
         label: `${deviceId} Temp (°${tempUnit})`,
         data: tempValues,
         borderColor: '#ea580c',
-        backgroundColor: 'rgba(234, 88, 12, 0.08)',
+        backgroundColor: isBar ? '#ea580c' : 'rgba(234, 88, 12, 0.15)',
         yAxisID: 'yTemp',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
+        fill: isArea,
+        borderRadius: isBar ? 4 : 0,
         borderWidth: 2,
-        pointRadius: 2,
+        pointRadius: isBar ? 0 : 2,
         pointHoverRadius: 5,
       });
       datasets.push({
         label: `${secondDeviceId} Temp (°${tempUnit})`,
         data: tempValues2,
         borderColor: '#f59e0b',
-        backgroundColor: 'rgba(245, 158, 11, 0.08)',
+        backgroundColor: isBar ? '#f59e0b' : 'rgba(245, 158, 11, 0.15)',
         yAxisID: 'yTemp',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
+        fill: isArea,
+        borderRadius: isBar ? 4 : 0,
         borderWidth: 2,
-        borderDash: [5, 5],
-        pointRadius: 2,
+        borderDash: isBar ? [] : [5, 5],
+        pointRadius: isBar ? 0 : 2,
         pointHoverRadius: 5,
       });
     }
@@ -112,23 +143,29 @@ export default function TelemetryChart({
         label: `${deviceId} Humidity (%)`,
         data: humValues,
         borderColor: '#0891b2',
-        backgroundColor: 'rgba(8, 145, 178, 0.08)',
+        backgroundColor: isBar ? '#0891b2' : 'rgba(8, 145, 178, 0.15)',
         yAxisID: 'yHum',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
+        fill: isArea,
+        borderRadius: isBar ? 4 : 0,
         borderWidth: 2,
-        pointRadius: 2,
+        pointRadius: isBar ? 0 : 2,
         pointHoverRadius: 5,
       });
       datasets.push({
         label: `${secondDeviceId} Humidity (%)`,
         data: humValues2,
         borderColor: '#2563eb',
-        backgroundColor: 'rgba(37, 99, 235, 0.08)',
+        backgroundColor: isBar ? '#2563eb' : 'rgba(37, 99, 235, 0.15)',
         yAxisID: 'yHum',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
+        fill: isArea,
+        borderRadius: isBar ? 4 : 0,
         borderWidth: 2,
-        borderDash: [5, 5],
-        pointRadius: 2,
+        borderDash: isBar ? [] : [5, 5],
+        pointRadius: isBar ? 0 : 2,
         pointHoverRadius: 5,
       });
     }
@@ -139,17 +176,22 @@ export default function TelemetryChart({
         data: tempValues,
         borderColor: '#f97316',
         backgroundColor: (context) => {
-          const ctx = context.chart.ctx;
+          if (isBar) return '#f97316';
+          const ctx = context.chart?.ctx;
+          if (!ctx) return 'rgba(249, 115, 22, 0.15)';
           const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-          gradient.addColorStop(0, isDark ? 'rgba(249, 115, 22, 0.25)' : 'rgba(249, 115, 22, 0.15)');
+          const topAlpha = isArea ? 0.35 : 0.15;
+          gradient.addColorStop(0, `rgba(249, 115, 22, ${topAlpha})`);
           gradient.addColorStop(1, 'rgba(249, 115, 22, 0.0)');
           return gradient;
         },
-        fill: true,
+        fill,
         yAxisID: 'yTemp',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
         borderWidth: 2.5,
-        pointRadius: historyData.length > 50 ? 0 : 3,
+        borderRadius: isBar ? 4 : 0,
+        pointRadius: isBar || historyData.length > 50 ? 0 : 3,
         pointHoverRadius: 6,
         pointBackgroundColor: '#f97316',
       });
@@ -161,17 +203,22 @@ export default function TelemetryChart({
         data: humValues,
         borderColor: '#06b6d4',
         backgroundColor: (context) => {
-          const ctx = context.chart.ctx;
+          if (isBar) return '#06b6d4';
+          const ctx = context.chart?.ctx;
+          if (!ctx) return 'rgba(6, 182, 212, 0.15)';
           const gradient = ctx.createLinearGradient(0, 0, 0, 300);
-          gradient.addColorStop(0, isDark ? 'rgba(6, 182, 212, 0.2)' : 'rgba(6, 182, 212, 0.12)');
+          const topAlpha = isArea ? 0.30 : 0.12;
+          gradient.addColorStop(0, `rgba(6, 182, 212, ${topAlpha})`);
           gradient.addColorStop(1, 'rgba(6, 182, 212, 0.0)');
           return gradient;
         },
-        fill: true,
+        fill,
         yAxisID: 'yHum',
-        tension: 0.35,
+        tension,
+        stepped: isStepped ? 'after' : false,
         borderWidth: 2.5,
-        pointRadius: historyData.length > 50 ? 0 : 3,
+        borderRadius: isBar ? 4 : 0,
+        pointRadius: isBar || historyData.length > 50 ? 0 : 3,
         pointHoverRadius: 6,
         pointBackgroundColor: '#06b6d4',
       });
@@ -293,7 +340,35 @@ export default function TelemetryChart({
         </div>
 
         {/* Filters and series toggles */}
-        <div className="flex flex-wrap items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2.5 text-xs">
+          {/* Chart Visualization Type Selector */}
+          <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60" title="Chart Visualization Type">
+            {[
+              { id: 'line', label: 'Line', icon: LineChart },
+              { id: 'area', label: 'Area', icon: TrendingUp },
+              { id: 'stepped', label: 'Stepped', icon: Activity },
+              { id: 'bar', label: 'Bar', icon: BarChart3 },
+            ].map((type) => {
+              const TypeIcon = type.icon;
+              const isActive = chartType === type.id;
+              return (
+                <button
+                  key={type.id}
+                  onClick={() => handleSetChartType(type.id)}
+                  className={`px-2 py-1 rounded transition text-xs font-semibold flex items-center gap-1 cursor-pointer ${
+                    isActive
+                      ? 'bg-emerald-500 text-slate-950 font-bold shadow-xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                  }`}
+                  title={`${type.label} Chart Mode`}
+                >
+                  <TypeIcon className="w-3.5 h-3.5" />
+                  <span>{type.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* Toggles */}
           <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 rounded-lg p-1 border border-slate-200 dark:border-slate-700/60">
             <button
@@ -399,6 +474,8 @@ export default function TelemetryChart({
               Connect your ESP32 or click "Send Test Packet" to populate telemetry points.
             </p>
           </div>
+        ) : chartType === 'bar' ? (
+          <Bar data={chartData} options={options} />
         ) : (
           <Line data={chartData} options={options} />
         )}

@@ -15,8 +15,10 @@ import {
   Send,
   Webhook,
   Radio,
-  RefreshCw
+  RefreshCw,
+  Smartphone
 } from 'lucide-react';
+import FCMMobileAlerts from './FCMMobileAlerts';
 import { 
   fetchNotificationChannels, 
   createNotificationChannel, 
@@ -139,7 +141,7 @@ export default function GuardrailsModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-fadeIn">
-      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] transition-colors duration-200">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] transition-colors duration-200">
         
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/90">
@@ -213,7 +215,19 @@ export default function GuardrailsModal({
               }`}
             >
               <Radio className="w-3.5 h-3.5" />
-              <span>Alert Channels ({notificationChannels.length})</span>
+              <span>Webhooks & Integrations ({notificationChannels.length})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('fcm')}
+              className={`pb-2.5 font-bold transition border-b-2 flex items-center gap-1.5 ${
+                activeTab === 'fcm'
+                  ? 'border-amber-500 text-amber-600 dark:text-amber-400'
+                  : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5 text-amber-500" />
+              <span>Mobile Push (FCM)</span>
             </button>
           </div>
 
@@ -633,6 +647,13 @@ export default function GuardrailsModal({
               )}
             </div>
 
+          </div>
+        )}
+
+        {/* TAB 4: FIREBASE CLOUD MESSAGING (FCM) MOBILE PUSH */}
+        {activeTab === 'fcm' && (
+          <div className="p-6 overflow-y-auto max-h-[calc(88vh-130px)]">
+            <FCMMobileAlerts activeTenantId={activeTenantId} />
           </div>
         )}
 

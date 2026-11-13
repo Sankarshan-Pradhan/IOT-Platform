@@ -13,6 +13,8 @@ import AddTenantModal from './AddTenantModal';
 import AddChannelModal from './AddChannelModal';
 import GuardrailsModal from './GuardrailsModal';
 import DeviceControlPanel from './DeviceControlPanel';
+import MetricGauges from './MetricGauges';
+import RedisCacheWidget from './RedisCacheWidget';
 import { OnboardingBanner, EmptyDashboardState } from './OnboardingGuide';
 import { 
   fetchHealth, 
@@ -39,12 +41,22 @@ import {
   fetchTelemetryStats,
   triggerTelemetryPrune
 } from '../api';
-import { Sparkles, AlertCircle, Menu, Plus, Trash2, ArrowLeft } from 'lucide-react';
+import { Sparkles, AlertCircle, Menu, Plus, Trash2, ArrowLeft, LayoutGrid, Gauge } from 'lucide-react';
 
 export default function UserDashboard({ currentUser, onLogout, adminUser, onBackToAdmin }) {
   // Navigation tabs: 'tenants' (Workspaces) | 'dashboard' (Live Dashboard) | 'devices' (Clients) | 'channels' (Groups)
   const [activeTab, setActiveTab] = useState('tenants');
   const [isSidebarOpenMobile, setIsSidebarOpenMobile] = useState(false);
+  const [metricViewMode, setMetricViewMode] = useState(() => {
+    return localStorage.getItem('iot_metric_view_mode') || 'cards';
+  });
+
+  const handleSetMetricViewMode = (mode) => {
+    setMetricViewMode(mode);
+    try {
+      localStorage.setItem('iot_metric_view_mode', mode);
+    } catch (_) {}
+  };
 
   // First-time user onboarding banner
   const [showOnboarding, setShowOnboarding] = useState(() => {
@@ -103,6 +115,7 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
   const [isSSEConnected, setIsSSEConnected] = useState(false);
   const [telemetryStats, setTelemetryStats] = useState(null);
   const [isPruning, setIsPruning] = useState(false);
+  const [fcmPushAlert, setFcmPushAlert] = useState(null);
 
   const handlePruneTelemetry = async () => {
     setIsPruning(true);
@@ -214,6 +227,17 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
           );
         } catch (err) {
           console.warn('[SSE] Error processing device_status event:', err);
+        }
+      });
+
+      // Real-time FCM Mobile Push Alert Listener
+      eventSource.addEventListener('fcm_push', (e) => {
+        try {
+          const pushPayload = JSON.parse(e.data);
+          setFcmPushAlert(pushPayload);
+          setTimeout(() => setFcmPushAlert(null), 8000);
+        } catch (err) {
+          console.warn('[SSE] Error processing fcm_push event:', err);
         }
       });
 
@@ -663,6 +687,27 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
         {/* Dynamic View Content based on activeTab */}
         <main className="max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 space-y-6 flex-1">
           
+          {/* Live Mobile Push Notification Toast Banner (FCM Stream) */}
+          {fcmPushAlert && (
+            <div className="rounded-2xl bg-amber-500 text-slate-950 p-3 sm:p-4 shadow-lg flex items-center justify-between gap-3 animate-bounce">
+              <div className="flex items-center gap-3">
+                <span className="p-2 rounded-xl bg-slate-950 text-amber-400 font-bold text-xs uppercase tracking-wider shrink-0">
+                  📱 Mobile Push Alert
+                </span>
+                <div>
+                  <h4 className="font-bold text-xs sm:text-sm">{fcmPushAlert.title}</h4>
+                  <p className="text-xs text-slate-900 font-medium">{fcmPushAlert.body}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setFcmPushAlert(null)}
+                className="px-2.5 py-1 rounded-lg bg-slate-950/20 hover:bg-slate-950/30 text-slate-950 text-xs font-bold transition cursor-pointer shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Offline Banner if Backend is down */}
           {health && health.status !== 'ok' && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 flex items-start gap-3 text-amber-800 text-xs sm:text-sm">
@@ -720,34 +765,93 @@ export default function UserDashboard({ currentUser, onLogout, adminUser, onBack
                 isAdmin={false}
               />
 
+              {/* Redis L1 In-Memory Cache Engine Status & Controls */}
+              <RedisCacheWidget />
+
               {/* Only show live metric cards and charts if there is a selected device with data */}
               {devices.length > 0 ? (
                 <>
-                  {/* Live Metric Cards */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
-                    <TemperatureCard
-                      valueC={currentTemp}
+                  {/* Metric Display Mode Switcher (Standard Digital Cards vs. Industrial Speedometer Gauges) */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+                        Live Telemetry Monitor
+                      </span>
+                      <span className="text-[11px] text-slate-400 font-mono">
+                        • {selectedDeviceId}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium self-start sm:self-auto">
+                      <button
+                        onClick={() => handleSetMetricViewMode('cards')}
+                        className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                          metricViewMode === 'cards'
+                            ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                            : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'
+                        }`}
+                        title="Display metrics as standard digital number cards"
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5" />
+                        <span>Digital Cards</span>
+                      </button>
+                      <button
+                        onClick={() => handleSetMetricViewMode('gauges')}
+                        className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                          metricViewMode === 'gauges'
+                            ? 'bg-white dark:bg-slate-900 text-orange-600 dark:text-orange-400 shadow-xs'
+                            : 'text-slate-500 hover:text-slate-900 dark:text-slate-400'
+                        }`}
+                        title="Display metrics as industrial radial speedometer gauges"
+                      >
+                        <Gauge className="w-3.5 h-3.5" />
+                        <span>Radial Gauges</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Render Cards or Gauges based on selected mode */}
+                  {metricViewMode === 'cards' ? (
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
+                      <TemperatureCard
+                        valueC={currentTemp}
+                        tempUnit={tempUnit}
+                        minVal={minTemp}
+                        maxVal={maxTemp}
+                        prevVal={prevTemp}
+                        deviceId={selectedDeviceId}
+                      />
+
+                      <HumidityCard
+                        valuePct={currentHum}
+                        minVal={minHum}
+                        maxVal={maxHum}
+                        prevVal={prevHum}
+                        deviceId={selectedDeviceId}
+                      />
+
+                      <SignalHealthCard
+                        payload={payload}
+                        deviceId={selectedDeviceId}
+                        lastSeenTime={currentLatest?.time}
+                      />
+                    </div>
+                  ) : (
+                    <MetricGauges
+                      currentTemp={currentTemp}
                       tempUnit={tempUnit}
-                      minVal={minTemp}
-                      maxVal={maxTemp}
-                      prevVal={prevTemp}
-                      deviceId={selectedDeviceId}
-                    />
-
-                    <HumidityCard
-                      valuePct={currentHum}
-                      minVal={minHum}
-                      maxVal={maxHum}
-                      prevVal={prevHum}
-                      deviceId={selectedDeviceId}
-                    />
-
-                    <SignalHealthCard
+                      minTemp={minTemp}
+                      maxTemp={maxTemp}
+                      prevTemp={prevTemp}
+                      currentHum={currentHum}
+                      minHum={minHum}
+                      maxHum={maxHum}
+                      prevHum={prevHum}
                       payload={payload}
                       deviceId={selectedDeviceId}
-                      lastSeenTime={currentLatest?.time}
                     />
-                  </div>
+                  )}
 
                   {/* Historical Line Chart */}
                   <TelemetryChart

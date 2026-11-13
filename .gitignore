@@ -60,6 +60,7 @@ wheels/
 infra/pgdata/
 infra/mosquitto/data/
 infra/mosquitto/log/
+infra/fcm/*.json
 *.sqlite3
 
 # IDEs & Editors

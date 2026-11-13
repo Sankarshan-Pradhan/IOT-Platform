@@ -281,12 +281,12 @@ export async function fetchLatestTelemetry(deviceId) {
   }
 }
 
-export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC', resolution = 'raw') {
+export async function fetchTelemetryHistory(deviceId, limit = 50, order = 'ASC', resolution = 'raw', startTime = '', endTime = '') {
   try {
-    const res = await fetch(
-      `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}&resolution=${encodeURIComponent(resolution)}`,
-      { headers: getAuthHeaders() }
-    );
+    let url = `${API_BASE_URL}/api/v1/devices/${encodeURIComponent(deviceId)}/telemetry/history?limit=${limit}&order=${order}&resolution=${encodeURIComponent(resolution)}`;
+    if (startTime) url += `&start=${encodeURIComponent(startTime)}`;
+    if (endTime) url += `&end=${encodeURIComponent(endTime)}`;
+    const res = await fetch(url, { headers: getAuthHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     return data.history || [];
@@ -623,3 +623,115 @@ export async function fetchFirmwares() {
     return [];
   }
 }
+
+// ----------------------------------------------------------------------------
+// Redis L1 In-Memory Cache & Performance APIs
+// ----------------------------------------------------------------------------
+
+export async function fetchCacheStats() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/system/cache-stats`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn('[API] Could not fetch cache stats:', err);
+    return {
+      connected: false,
+      storage_mode: 'memory_fallback',
+      total_keys: 0,
+      memory_used_human: 'N/A',
+      cache_hits: 0,
+      cache_misses: 0,
+      hit_ratio_percent: '0.0%',
+      uptime_seconds: 0,
+    };
+  }
+}
+
+export async function flushCache() {
+  const res = await fetch(`${API_BASE_URL}/api/v1/system/cache-flush`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to flush cache (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+// ----------------------------------------------------------------------------
+// Firebase Cloud Messaging (FCM) Mobile Push Notification APIs
+// ----------------------------------------------------------------------------
+
+export async function fetchFCMConfig() {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/fcm/config`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    return {
+      enabled: true,
+      has_server_key: false,
+      delivery_mode: 'simulated_operator_push',
+    };
+  }
+}
+
+export async function fetchFCMTokens(tenantId = '') {
+  try {
+    const query = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : '';
+    const res = await fetch(`${API_BASE_URL}/api/v1/notifications/fcm/tokens${query}`, {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return data.tokens || [];
+  } catch (err) {
+    console.warn('[API] Could not fetch FCM tokens:', err);
+    return [];
+  }
+}
+
+export async function registerFCMToken(payload) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/fcm/token`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to register push device (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function deleteFCMToken(tokenId) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/fcm/token/${encodeURIComponent(tokenId)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to delete push token (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+
+export async function testFCMPush(payload) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/notifications/fcm/test`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to dispatch test mobile push (HTTP ${res.status})`);
+  }
+  return await res.json();
+}
+

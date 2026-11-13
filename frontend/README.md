@@ -184,6 +184,29 @@ Integrated in [`Header.jsx`](src/components/Header.jsx):
 
 ---
 
+### 18. Auto-Scaling Radial Gauges & View Mode Persistence
+Integrated in [`MetricGauges.jsx`](src/components/MetricGauges.jsx) & [`UserDashboard.jsx`](src/components/UserDashboard.jsx):
+- **Dual Visual Modes**: Switch between high-density **Digital Cards** and industrial **Radial Gauges** with one click.
+- **Adaptive Range Scaling**: Automatically detects sensor extremes (e.g. cryogenic freezers at `-40°C`, industrial ovens at `350°C`) and expands scale bounds with a 15% headroom buffer and clean tick steps.
+- **Dynamic Color Zones**: Arc thresholds (Optimal, Normal, Warning, Critical) calculate dynamically with an emerald `[AUTO]` scale pill badge.
+- **`localStorage` Persistence**: The selected view mode (`iot_metric_view_mode`) is saved in browser storage and remembered across reloads.
+
+---
+
+### 19. Multi-Style Charting Engine
+Integrated in [`TelemetryChart.jsx`](src/components/TelemetryChart.jsx):
+- **4 Chart Visual Styles**: Toggle between **Line**, **Area**, **Stepped Line**, and **Bar** charts natively in React.
+- **Persistent Selection**: Saves selected chart style (`iot_chart_type`) to `localStorage`.
+- **Dual Y-Axes**: Displays Temperature (°C/°F) on the left axis and Relative Humidity (%) on the right axis.
+
+---
+
+### 20. Redis Cache Dashboard & FCM Mobile Push Alerts
+- **Redis Cache Widget ([`RedisCacheWidget.jsx`](src/components/RedisCacheWidget.jsx))**: Live hit ratio gauge, allocated memory, key counts, and 1-click admin cache flush button.
+- **FCM Mobile Alerts ([`FCMMobileAlerts.jsx`](src/components/FCMMobileAlerts.jsx))**: Register browser and mobile tokens for real-time push alerts, view live Google Cloud HTTP v1 connection badges, send test pings, and view service account setup instructions.
+
+---
+
 ## 📁 Project Directory Layout
 
 ```
@@ -197,8 +220,11 @@ frontend/
 │   │   ├── Header.jsx             # Health status badge, countdown timer, unit, guardrail alarm badge & user profile / sign out
 │   │   ├── DeviceSelector.jsx     # Device switcher with delete actions & empty states
 │   │   ├── MetricCard.jsx         # Temperature, Humidity, and RSSI health cards
+│   │   ├── MetricGauges.jsx       # Auto-scaling radial gauges with dynamic headroom padding
+│   │   ├── RedisCacheWidget.jsx   # Live Redis cache hit ratio, memory & 1-click flush
+│   │   ├── FCMMobileAlerts.jsx    # Real-time Google FCM mobile push notification cockpit
 │   │   ├── DeviceControlPanel.jsx # Two-way relay control, LED, reboot, token & OTA
-│   │   ├── TelemetryChart.jsx     # Dual Y-axis historical line chart with downsampling & export
+│   │   ├── TelemetryChart.jsx     # Dual Y-axis historical charts (Line/Area/Step/Bar) with rollups & export
 │   │   ├── RecentTable.jsx        # Live tabular packet viewer
 │   │   ├── TenantsView.jsx        # Multi-tenant workspaces with admin directory & delete support
 │   │   ├── ChannelsView.jsx       # Channels & MQTT topic routing with delete support

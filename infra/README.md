@@ -27,7 +27,8 @@ Containerized infrastructure for the IoT Platform. Manages the Eclipse Mosquitto
 | :--- | :--- | :--- | :--- | :--- |
 | **TimescaleDB** | `iot_postgres` | `5433` | `5432` | PostgreSQL 16 with TimescaleDB extension for time-series hypertables & rollups |
 | **Mosquitto** | `iot_mosquitto` | `1883`, `9001` | `1883`, `9001` | MQTT 3.1.1 / 5.0 broker with native TCP & WebSocket support |
-| **Backend API** | `iot_backend` | `8080` | `8080` | Go REST server, native SSE streaming, downsampler, alert dispatchers |
+| **Redis Cache** | `iot_redis` | `6379` | `6379` | High-speed L1 cache for sub-millisecond telemetry reads and rate limiting |
+| **Backend API** | `iot_backend` | `8080` | `8080` | Go REST server, native SSE streaming, downsampler, FCM push, alert dispatchers |
 | **Frontend UI** | `iot_frontend` | `3000` | `80` | Production React 18 dashboard served via Nginx reverse proxy |
 
 ### Container Orchestration & Dependency Ordering
@@ -46,6 +47,9 @@ The root [`docker-compose.yml`](../docker-compose.yml) enforces explicit healthc
 ```
 infra/
 ├── docker-compose.yml        # Multi-container orchestration definition
+├── fcm/                      # Google Firebase Cloud Messaging credentials
+│   ├── README.md             # Setup guide for Service Account keys
+│   └── service-account.json  # Real Google Service Account JSON (mount: /etc/fcm)
 ├── init.sql                  # Database schema, hypertables, rollups & trigger migrations
 ├── mosquitto.conf            # Mosquitto broker network & security settings
 ├── .env.example              # Environment variables template
@@ -154,6 +158,16 @@ MQTT_WS_PORT=9001
 # Telemetry Retention Engine Configuration
 MAX_TELEMETRY_RECORDS=10000
 TELEMETRY_PRUNE_INTERVAL_SEC=30
+
+# Redis Cache Configuration
+REDIS_ADDR=redis:6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# Firebase Cloud Messaging (FCM HTTP v1) Configuration
+FCM_CREDENTIALS_FILE=/etc/fcm/service-account.json
+FCM_SERVICE_ACCOUNT_JSON=
+FCM_SERVER_KEY=
 ```
 
 ---

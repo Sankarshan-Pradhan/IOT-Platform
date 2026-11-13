@@ -4,12 +4,14 @@
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react)](https://react.dev)
 [![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=flat&logo=vite)](https://vitejs.dev)
 [![TimescaleDB](https://img.shields.io/badge/TimescaleDB-PostgreSQL_16-FDB515?style=flat&logo=postgresql)](https://timescale.com)
+[![Redis](https://img.shields.io/badge/Redis-7_Alpine-DC382D?style=flat&logo=redis)](https://redis.io)
 [![MQTT](https://img.shields.io/badge/MQTT-Mosquitto_2.0-660066?style=flat&logo=eclipsemosquitto)](https://mosquitto.org)
+[![Firebase](https://img.shields.io/badge/FCM-HTTP_v1_Push-FFCA28?style=flat&logo=firebase)](https://firebase.google.com)
 [![ESP32](https://img.shields.io/badge/Firmware-ESP32_+_DHT22-E7352C?style=flat&logo=espressif)](https://espressif.com)
 [![Docker](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?style=flat&logo=docker)](https://docker.com)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-v3-38B2AC?style=flat&logo=tailwind-css)](https://tailwindcss.com)
 
-A high-performance, enterprise-grade multi-tenant IoT platform designed for high-throughput time-series telemetry ingestion, zero-latency streaming, two-way hardware actuation, automated alert dispatching, TimescaleDB continuous aggregates, data exports, remote OTA firmware updates, and single-command containerization.
+A high-performance, enterprise-grade multi-tenant IoT platform designed for high-throughput time-series telemetry ingestion, distributed Redis L1 caching, zero-latency SSE streaming, Google Firebase Cloud Messaging (FCM) mobile push alerts, two-way hardware actuation, auto-scaling radial gauges, TimescaleDB continuous aggregates, data exports, remote OTA firmware updates, and single-command containerization.
 
 ---
 
@@ -100,7 +102,8 @@ The platform provides flexible device management:
 ### Step 6: Live Telemetry Visualization
 - Navigate to **Live Dashboard**.
 - Pick any device in the top **Active Sensors** selector strip.
-- View **Live Metric Cards** (Temperature, Humidity, Heat Index with Min/Max).
+- View **Live Metric Cards** or switch to **Auto-Scaling Radial Gauges** (Temperature, Humidity, Heat Index with dynamic headroom padding).
+- Your visualization preferences (Card vs Gauge, and Line vs Area vs Stepped vs Bar chart) **persist in `localStorage`**.
 - Analyze **Interactive Charts** (continuous 5s updates + zero-latency SSE).
 - Toggle **Compare Mode** to evaluate two sensors side-by-side with synchronized historical telemetry downsampling and zero-latency SSE live updates.
 - Export sensor datasets to **CSV** or **JSON** with one click.
@@ -240,6 +243,22 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 - **IP-Based Login Rate Limiting:** Sliding-window rate limiter prevents automated brute-force attacks on `/api/v1/auth/login`.
 - **Relational Persistence for Integrations:** Alert notification channels (Slack, Discord, custom Webhooks) and OTA firmware packages are persistently stored in relational PostgreSQL tables with automatic schema migrations.
 
+### 13. Distributed Redis L1 Caching & Session Management
+- **Sub-Millisecond Read Acceleration:** Dedicated Redis 7 container caches latest telemetry snapshots (`GET /api/v1/devices/{id}/telemetry/latest`), continuous aggregate queries, and user sessions.
+- **Smart Cache Invalidation:** Real-time cache eviction triggers upon device deletion or new telemetry ingestion.
+- **Cache Health & Operator Widget:** Live hit/miss ratios, key counts, and memory usage are visible in the dashboard via `RedisCacheWidget.jsx`, with an admin 1-click cache purge button (`POST /api/v1/system/cache-flush`).
+
+### 14. Google Cloud Firebase Cloud Messaging (FCM) HTTP v1 Push Delivery
+- **Modern HTTP v1 Standard:** Replaced deprecated legacy endpoints with Google's secure HTTP v1 API (`https://fcm.googleapis.com/v1/projects/{project_id}/messages:send`).
+- **OAuth2 RS256 JWT Token Minting:** Signs service account credentials natively in Go using PKCS#8 / PKCS#1 private keys with automated 5-minute safety caching.
+- **Background Operator Alerting:** Operators register browser or mobile tokens to receive real-time push alerts on their phones when away from the console.
+- **Automatic Stale Token Pruning:** Backend automatically catches Google `UNREGISTERED` / `404` error responses and cleans up expired tokens from PostgreSQL.
+
+### 15. Dynamic Auto-Scaling Radial Gauges & View Persistence
+- **Adaptive Sensor Range Detection:** Gauges compute min/max limits dynamically with 15% headroom padding and clean steps for extreme conditions (cryogenic chillers, high-temp ovens, industrial pressures).
+- **Dynamic 4-Color Threshold Zones:** Optimal, Normal, Warning, and Critical zones adjust automatically to the computed scale with an emerald `[AUTO]` indicator badge.
+- **localStorage Preference Persistence:** Toggle between digital cards and radial gauges, as well as chart styles (Line, Area, Stepped, Bar), persists in the browser across sessions.
+
 ---
 
 ## 🔌 API Reference Summary
@@ -248,6 +267,13 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 |---|---|---|---|
 | `POST` | `/api/v1/auth/register` | Public | Register new user account |
 | `POST` | `/api/v1/auth/login` | Public (Rate-Limited) | Authenticate and obtain JWT token |
+| `GET` | `/api/v1/system/cache-stats` | Protected | Live Redis cache hit ratio, memory & key statistics |
+| `POST` | `/api/v1/system/cache-flush` | Protected (Admin Only) | Flush distributed Redis cache keys |
+| `GET` | `/api/v1/notifications/fcm/config` | Protected | Firebase Cloud Messaging public configuration |
+| `GET` | `/api/v1/notifications/fcm/tokens` | Protected (Scoped) | Query registered FCM mobile push device tokens |
+| `POST` | `/api/v1/notifications/fcm/token` | Protected | Register mobile/browser device token for FCM push alerts |
+| `DELETE` | `/api/v1/notifications/fcm/token/{id}` | Protected | Unregister FCM mobile device token |
+| `POST` | `/api/v1/notifications/fcm/test` | Protected | Dispatch instant simulated FCM push notification |
 | `GET` | `/api/v1/auth/me` | Protected | Fetch current authenticated user profile |
 | `GET` | `/api/v1/users` | Protected (Admin Only) | User directory and workspace counts |
 | `GET` | `/api/v1/tenants` | Protected (Scoped) | List workspaces owned by caller (or all for Admin) |
@@ -295,8 +321,9 @@ The ESP32 flash memory is split into two slots (**OTA_0** and **OTA_1**):
 |---|---|---|---|
 | **Database** | TimescaleDB (Postgres 16) | `5433` | Time-series hypertables, continuous aggregates, multi-tenancy |
 | **MQTT Broker** | Eclipse Mosquitto 2.0 | `1883`, `9001` | High-throughput telemetry ingestion & downlink commands |
-| **Backend API** | Go 1.24 | `8080` | REST API, SSE streaming, downsampler, alert dispatcher |
-| **Frontend UI** | React 18 + Vite + Tailwind | `3000` | Management cockpit, charts, device control, guardrails |
+| **Redis Cache** | Redis 7 Alpine | `6379` | Sub-millisecond telemetry cache, rate limiting, distributed session state |
+| **Backend API** | Go 1.24 | `8080` | REST API, SSE streaming, downsampler, FCM push, alert dispatcher |
+| **Frontend UI** | React 18 + Vite + Tailwind | `3000` | Cockpit, native TimescaleDB analytics & rollups, device control, FCM |
 | **Edge Firmware** | ESP32 (C++ / PlatformIO) | — | Hardware sensor sampling, relay actuation, OTA flashing |
 | **Simulator** | Go CLI | — | Virtual sensor nodes for testing without hardware |
 
@@ -362,13 +389,14 @@ iot-platform/
 ├── README.md                      # Comprehensive project guide & documentation
 │
 ├── backend/                       # Go REST API & Ingestion Service
-│   ├── handlers/                  # Route handlers, SSE broker, OTA, alerts, export
+│   ├── handlers/                  # Route handlers, SSE broker, OTA, alerts, export, FCM
 │   │   ├── export.go              # CSV & JSON streaming data export
 │   │   ├── ota.go                 # Firmware binary server & OTA dispatch
-│   │   ├── notifications.go       # Slack, Discord & Webhook alert dispatcher
+│   │   ├── notifications.go       # Slack, Discord, Webhooks & FCM HTTP v1 push engine
 │   │   ├── sse.go                 # Zero-latency Server-Sent Events broker
 │   │   ├── handlers.go            # Device CRUD, channel linking, downsampling & commands
-│   │   └── handlers_test.go       # Unit tests covering all features
+│   │   └── handlers_test.go       # Comprehensive unit tests (20 suites)
+│   ├── redis/                     # Redis L1 high-speed caching & rate limiting client
 │   ├── models/                    # Data transfer objects & models
 │   ├── mqtt/                      # Paho MQTT subscriber & command publisher
 │   ├── Dockerfile                 # Multi-stage production container
@@ -382,6 +410,9 @@ iot-platform/
 │   │   │   ├── DevicesView.jsx        # Device inventory with channel/group tags
 │   │   │   ├── DeviceSelector.jsx     # Live dashboard device selector with channel labels
 │   │   │   ├── DeviceControlPanel.jsx # Two-way relay control, LED, reboot & OTA
+│   │   │   ├── MetricGauges.jsx       # Auto-scaling radial gauges with dynamic headroom
+│   │   │   ├── RedisCacheWidget.jsx   # Live Redis hit ratio, memory & 1-click purge
+│   │   │   ├── FCMMobileAlerts.jsx    # Real-time mobile phone push notification management
 │   │   │   ├── TelemetryChart.jsx     # Dual Y-axis charts with 1m/5m/1h rollups & export
 │   │   │   ├── GuardrailsModal.jsx    # Threshold safety rules & Alert Channels
 │   │   │   ├── UserDashboard.jsx      # Operator cockpit with live SSE push & onboarding
@@ -398,6 +429,7 @@ iot-platform/
 │       └── simulate_nodes.go      # Multi-node simulated sensor CLI
 │
 ├── infra/                         # Infrastructure Configurations
+│   ├── fcm/                       # Google Firebase service account credentials directory
 │   ├── init.sql                   # Hypertables, continuous rollups, triggers, foreign keys
 │   └── mosquitto.conf             # Mosquitto broker configuration
 │

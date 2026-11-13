@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   ArrowLeft,
   Lock,
+  BarChart3,
 } from 'lucide-react';
 
 export default function Sidebar({
